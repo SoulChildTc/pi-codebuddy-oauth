@@ -70,6 +70,15 @@ function detectImages(id: string): boolean {
   return /claude|gemini|gpt/i.test(id);
 }
 
+/** 网关 /v3/config 的 supportsImages 优先；仅当字段缺失时回退到 ID 猜测。
+ *  本地补丁 (2026-09-21)：原实现只用白名单正则，导致 deepseek/glm-5.3/kimi/minimax
+ *  等网关标了 supportsImages=true 的模型在 pi 侧只剩 ["text"]，图片被替换成占位符。 */
+export function modelSupportsImages(m: RemoteModel): boolean {
+  if (m.disabledMultimodal) return false;
+  if (typeof m.supportsImages === "boolean") return m.supportsImages;
+  return detectImages(m.id);
+}
+
 /** RemoteModel → Pi ProviderModelConfig 所需字段 */
 export function remoteModelToPi(m: RemoteModel): PiModelConfig {
   const contextWindow = m.maxAllowedSize ?? m.maxInputTokens ?? DEFAULT_CONTEXT;
@@ -78,7 +87,7 @@ export function remoteModelToPi(m: RemoteModel): PiModelConfig {
     id: m.id,
     name: m.name,
     reasoning: m.supportsReasoning !== false && detectThinking(m.id),
-    input: (detectImages(m.id) && !m.disabledMultimodal) ? ["text", "image"] : ["text"],
+    input: modelSupportsImages(m) ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens,
