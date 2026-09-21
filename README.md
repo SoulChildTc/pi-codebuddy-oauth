@@ -12,6 +12,7 @@
 - **OAuth 登录** — Pi 原生 `/login` 流程接入 IOA：`/v2/plugin/auth/state` → 浏览器 → 轮询 token。token 刷新由 Pi 双检锁托管（5 分钟 skew 预刷新）。
 - **API Key 登录** — 设置 `CODEBUDDY_API_KEY`（`ck_xxx`）即可，无需浏览器。
 - **自动模型发现** — 调用 `GET /v3/config` 提取 craft agent 模型列表（5 分钟 TTL 缓存 + 单飞；登录后自动触发）。
+- **视觉能力跟随网关** — 图片输入以 `/v3/config` 的 `supportsImages` 为准（`disabledMultimodal` 优先置否，字段缺失才回退 ID 白名单）。CodeBuddy 侧 deepseek / glm / kimi / minimax / hunyuan 系列均支持图片，不会因为 ID 不含 `claude|gemini|gpt` 而被降级成纯文本。
 - **401/403 中途刷新重试** — 流式请求中 token 失效时自动刷新并重试一次（15 秒冷却防抖）。
 - **瞬时 400（code 11133）自动重试** — CodeBuddy 网关偶发把上游瞬时校验失败包装成 HTTP 400 `{"code":11133}` 返回；拦截器按 **1s → 4s → 10s → 25s** 退避幂等重发（最多 4 次，总等待 ≤40s），其他 400 原样透传。
 - **session 级 `X-Conversation-ID` 稳定化** — 同一 Pi session 复用同一 conversation id，提升上游 prompt cache 命中率（compaction 时淘汰）。
