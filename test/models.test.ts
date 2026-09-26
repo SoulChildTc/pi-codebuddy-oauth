@@ -62,4 +62,26 @@ describe("models (pi)", () => {
     expect(p.contextWindow).toBe(168000);
     expect(p.maxTokens).toBe(32000);
   });
+  it("hy4-preview 是推理模型（旧实现写死 hy3 导致被误判为非推理）", () => {
+    const m = remoteModelToPi({ id: "hy4-preview", name: "Hy4 preview" });
+    expect(m.reasoning).toBe(true);
+    // 上游未公布 effort 词表时不下发 reasoning_effort，保持请求形状不变
+    expect(m.compat?.supportsReasoningEffort).toBe(false);
+    expect(m.thinkingLevelMap).toBeUndefined();
+  });
+  it("上游 supportsReasoning=true 时不再被 ID 猜测覆盖", () => {
+    expect(remoteModelToPi({ id: "mystery-9", name: "M", supportsReasoning: true }).reasoning).toBe(true);
+    expect(remoteModelToPi({ id: "mystery-9", name: "M" }).reasoning).toBe(false);
+  });
+  it("公布 effort 词表的推理模型仍可下发 reasoning_effort", () => {
+    const m = remoteModelToPi({
+      id: "hy3", name: "Hy3", supportsReasoning: true,
+      reasoning: { supportedEfforts: ["low", "high"], defaultEffort: "high" },
+    });
+    expect(m.reasoning).toBe(true);
+    expect(m.compat?.supportsReasoningEffort).toBeUndefined();
+    expect(m.thinkingLevelMap).toEqual({ low: "low", high: "high", default: "high" });
+  });
 });
+
+
