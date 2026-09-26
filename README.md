@@ -14,6 +14,8 @@
 - **自动模型发现** — 调用 `GET /v3/config` 提取 craft agent 模型列表（5 分钟 TTL 缓存 + 单飞；登录后自动触发）。
 - **401/403 中途刷新重试** — 流式请求中 token 失效时自动刷新并重试一次（15 秒冷却防抖）。
 - **瞬时 400（code 11133）自动重试** — CodeBuddy 网关偶发把上游瞬时校验失败包装成 HTTP 400 `{"code":11133}` 返回；拦截器按 **1s → 4s → 10s → 25s** 退避幂等重发（最多 4 次，总等待 ≤40s），其他 400 原样透传。
+- **429 限流归一化** — 网关限流时只回状态码、body 为空（上层只能看到 `429 status code (no body)`），而 Pi 的 agent 级重试只看错误文案、不读 `Retry-After`，于是盲打 4 次。拦截器现在会读 `Retry-After(-ms)` / `X-RateLimit-Reset*`：提示在预算内就地等待并重发；否则合成可读 JSON body。窗口很远（提示超过 `CODEBUDDY_429_MAX_WAIT_MS`）时文案带 `quota exceeded`，命中 Pi 的不可重试判定 → 立即失败而不是连打。
+- **泄漏思考归一化**（`src/reasoning-leak.ts`）— 部分模型（实测 hy4-preview）会把思考草稿直接混进 SSE 的 `delta.content`，并留下 `</think:会话id>` 模板闭合标记。pi-ai 只从 `reasoning_content` 建 thinking 块，于是整段自我复读被打印到终端、又被写回 transcript 强化下一轮。本模块在 SSE 层把标记之前的文本改写到 `delta.reasoning_content`，标记本身从流中删除。
 - **session 级 `X-Conversation-ID` 稳定化** — 同一 Pi session 复用同一 conversation id，提升上游 prompt cache 命中率（compaction 时淘汰）。
 - **环境自动切换** — 默认国内端点（`copilot.tencent.com`），`CODEBUDDY_NETWORK=internet` 切国际（`www.codebuddy.ai`），`CODEBUDDY_ENDPOINT` 覆盖完整 URL。
 
@@ -59,6 +61,9 @@ export CODEBUDDY_API_KEY=ck_xxx
 | `CODEBUDDY_STABLE_CONVERSATION` | `1` | `0` 关闭 session 级 conversation-id 稳定化 |
 | `CODEBUDDY_CONVERSATION_MAP_MAX` | `1000` | session → conversationId LRU 容量 |
 | `CODEBUDDY_TENANT_ID` / `CODEBUDDY_ENTERPRISE_ID` / `CODEBUDDY_USER_ID` | _(从 JWT 提)_ | 覆盖自动提取的身份头（仅 OAuth 模式） |
+| `CODEBUDDY_LEAKED_REASONING` | `1` | `0` 关闭泄漏思考归一化（SSE 层 content → reasoning_content 改写） |
+| `CODEBUDDY_429_MAX_WAIT_MS` | `20000` | 429 就地等待上限；`Retry-After` 超过它就视为配额窗口，直接终态失败 |
+| `CODEBUDDY_429_RETRIES` | `1` | 429 就地重发次数（不含首次请求）；设 `0` 表示完全交给 Pi 的 `retry.*` 策略 |
 
 ## 架构
 

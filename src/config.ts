@@ -21,6 +21,10 @@ export const REFRESH_TIMEOUT_MS = 5000;
 export const REFRESH_SKEW_MS = 5*60*1000;
 export const DEFAULT_EXPIRES_MS = 24*60*60*1000;
 export const DISCOVERY_CACHE_TTL_MS = 5*60*1000;
+/** 429 就地等待重发的默认预算（毫秒）：只在 Retry-After 提示不超过它时等待。 */
+export const DEFAULT_429_MAX_WAIT_MS = 20_000;
+/** 429 就地重发次数默认值（不含首次请求）。 */
+export const DEFAULT_429_RETRIES = 1;
 
 export interface CodeBuddyConfig {
   endpoint?: string; network: "internal"|"ioa"|"internet"; auth: "auto"|"oauth"|"api";
@@ -28,6 +32,12 @@ export interface CodeBuddyConfig {
   tenantId?:string; enterpriseId?:string; userId?:string;
   apiKey?:string; platform:string; appVersion:string; ideName:string; ideType:string; ideVersion:string;
   domain:string; product:string; agentIntent:string; envId:string;
+  /** 归一化上游泄漏进 content 的思考文本（见 reasoning-leak.ts）。 */
+  rewriteLeakedReasoning: boolean;
+  /** 429 就地等待上限（毫秒）；超过则不再等待，直接合成错误 body 交给上层。 */
+  rateLimitMaxWaitMs: number;
+  /** 429 就地重发次数。 */
+  rateLimitRetries: number;
 }
 
 function num(v: string | undefined, d: number): number {
@@ -49,6 +59,9 @@ export function getConfig(): CodeBuddyConfig {
     apiKey: process.env.CODEBUDDY_API_KEY || "",
     platform: PLATFORM, appVersion: APP_VERSION, ideName: IDE_NAME, ideType: IDE_TYPE, ideVersion: IDE_VERSION,
     domain: DOMAIN_DEFAULT, product: PRODUCT, agentIntent: AGENT_INTENT, envId: ENV_ID,
+    rewriteLeakedReasoning: process.env.CODEBUDDY_LEAKED_REASONING !== "0",
+    rateLimitMaxWaitMs: num(process.env.CODEBUDDY_429_MAX_WAIT_MS, DEFAULT_429_MAX_WAIT_MS),
+    rateLimitRetries: num(process.env.CODEBUDDY_429_RETRIES, DEFAULT_429_RETRIES),
   };
 }
 
