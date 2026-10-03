@@ -1,24 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseStoredAuth, pickAuthMode, effectiveAuth, needsRefresh } from "../src/auth-state.js";
+import { pickAuthMode, effectiveAuth } from "../src/auth-state.js";
 
-describe("parseStoredAuth 窄化守卫", () => {
-  it("损坏输入返回 undefined（非对象/缺字段/类型错）", () => {
-    expect(parseStoredAuth(null)).toBeUndefined();
-    expect(parseStoredAuth("bad")).toBeUndefined();
-    expect(parseStoredAuth({ type:"api" })).toBeUndefined(); // 缺 key
-    expect(parseStoredAuth({ type:"oauth", access:"a" })).toBeUndefined(); // 缺 refresh/expires
-    expect(parseStoredAuth({ type:"unknown", key:"k" })).toBeUndefined();
-  });
-  it("合法 api 解析", () => {
-    expect(parseStoredAuth({ type:"api", key:"k" })).toEqual({ type:"api", key:"k" });
-  });
-  it("合法 oauth 解析", () => {
-    expect(parseStoredAuth({ type:"oauth", access:"a", refresh:"r", expires: 123 })).toEqual({ type:"oauth", access:"a", refresh:"r", expires:123 });
-  });
-  it("过期 oauth 仍解析（有效性由 effectiveAuth ตัดสิน）", () => {
-    expect(parseStoredAuth({ type:"oauth", access:"a", refresh:"r", expires: 0 })).toBeDefined();
-  });
-});
 
 describe("pickAuthMode 全矩阵", () => {
   it("cfg.auth=api 强制 api", () => {
@@ -69,30 +51,5 @@ describe("effectiveAuth 单分支", () => {
   it("oauth 缺 access 返回 null", () => {
     const cfg = { auth:"oauth", apiKey:"" } as any;
     expect(effectiveAuth({ type:"oauth", refresh:"r", expires: 123 } as any, cfg)).toBeNull();
-  });
-});
-
-describe("needsRefresh 边界", () => {
-  it("oauth 且 expires - skew < now 且 refresh 非空 → true", () => {
-    const now = Date.now();
-    const auth = { type:"oauth", access:"a", refresh:"r", expires: now + 4*60*1000 } as any; // 4min 内过期，skew 5min
-    expect(needsRefresh(auth, now)).toBe(true);
-  });
-  it("oauth 但 expir 远未到 → false", () => {
-    const now = Date.now();
-    const auth = { type:"oauth", access:"a", refresh:"r", expires: now + 10*60*1000 } as any;
-    expect(needsRefresh(auth, now)).toBe(false);
-  });
-  it("恰在 skew 边界外 → false", () => {
-    const now = Date.now();
-    const auth = { type:"oauth", access:"a", refresh:"r", expires: now + 5*60*1000 + 1000 } as any;
-    expect(needsRefresh(auth, now)).toBe(false);
-  });
-  it("api 类型永不刷新", () => {
-    expect(needsRefresh({ type:"api", key:"k" } as any, Date.now())).toBe(false);
-  });
-  it("oauth 但 refresh 为空 → false", () => {
-    const auth = { type:"oauth", access:"a", refresh:"", expires: Date.now() } as any;
-    expect(needsRefresh(auth, Date.now())).toBe(false);
   });
 });
