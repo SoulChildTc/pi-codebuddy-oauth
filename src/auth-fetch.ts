@@ -29,6 +29,17 @@ export function createAuthFetch(deps: AuthFetchDeps) {
   let lastRefreshFailedAt = 0;
   const COOLDOWN_MS = 15_000;
   const inCooldown = () => Date.now() - lastRefreshFailedAt < COOLDOWN_MS;
+  /** 刷新失败后进入冷却：冷却期内不再对 401/403 发起刷新（RefreshLock 只去重并发，不去重串行） */
+  const markRefreshFailed = () => { lastRefreshFailedAt = Date.now(); };
+  const markRefreshOk = () => { lastRefreshFailedAt = 0; };
+  // 身份对同一 access token 是不变量：按 token 字符串做 1 项记忆化，避免每请求 base64 解码 + 正则
+  let identityCache: { token: string; identity: { tenantId:string; enterpriseId:string; userId:string } } | null = null;
+  const identityFor = (token: string) => {
+    if (identityCache?.token === token) return identityCache.identity;
+    const identity = resolveIdentity(decodeJwtPayload(token) as any, cfg);
+    identityCache = { token, identity };
+    return identity;
+  };
 
   return async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const urlStr = url.toString();
@@ -61,15 +72,20 @@ export function createAuthFetch(deps: AuthFetchDeps) {
     if (activeAuth.type === "oauth" && (response.status === 401 || response.status === 403) && activeAuth.refresh && !inCooldown()) {
       const next = await refreshAndPersist(activeAuth);
       if (next) {
+        markRefreshOk();
         activeAuth = next;
         response = await doRequest(activeAuth);
+      } else {
+        markRefreshFailed();
       }
     }
     // 瞬时 400（code 11133）重试：CodeBuddy 网关偶发把上游厂商的瞬时校验失败包装成 11133 返回
     // （服务端侧故障窗口，同构请求稍后重发即成功）。body 为字符串 JSON 可幂等重发；400 到达即流未开始。
-    const TRANSIENT_400_RETRIES = 4;
+    // 次数可通过 CODEBUDDY_TRANSIENT_400_RETRIES 配置（默认 4，退避 1s/4s/10s/25s）
+    const MAX_RETRIES = cfg.transient400Retries ?? 4;
     const RETRY_DELAYS_MS = [1000, 4000, 10000, 25000];
-    for (let attempt = 0; response.status === 400 && attempt < TRANSIENT_400_RETRIES; attempt++) {
+    let lastText = ""; // 循环内已读过的 400 body，退出后复用，避免二次 response.text() 抛 "Body is unusable"
+    for (let attempt = 0; response.status === 400 && attempt < MAX_RETRIES; attempt++) {
       const text = await response.text();
       let code: unknown;
       try { code = (JSON.parse(text) as any)?.code; } catch {}
@@ -78,16 +94,27 @@ export function createAuthFetch(deps: AuthFetchDeps) {
         h.set("Content-Type", "application/json");
         return new Response(text, { status: 400, headers: h });
       }
+      lastText = text;
       if (init.signal?.aborted) break;
-      deps.logger?.warn(`upstream transient 400 (11133), retry ${attempt + 1}/${TRANSIENT_400_RETRIES}`);
+      deps.logger?.warn(`upstream transient 400 (11133), retry ${attempt + 1}/${MAX_RETRIES}`);
       await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]));
       if (init.signal?.aborted) break;
       response = await doRequest(activeAuth);
     }
     if (!response.ok) {
-      const text = await response.text();
+      // 400 重试路径的 body 可能已消费（abort 中断/重试耗尽）：用循环内缓存的文本重建；
+      // 二次读取抛 "Body is unusable" 时兜底，不让 fetch 拦截器向外抛异常
+      let text: string;
+      try {
+        text = await response.text();
+      } catch {
+        text = response.status === 400 ? lastText : "";
+      }
       const h = new Headers(response.headers);
       h.set("Content-Type", "application/json");
+      if (!text) {
+        return new Response(JSON.stringify({ error: { message: init.signal?.aborted ? "codebuddy: request aborted" : `codebuddy: upstream ${response.status} (unreadable body)` } }), { status: response.status, headers: h });
+      }
       return new Response(text, { status: response.status, headers: h });
     }
     return response;

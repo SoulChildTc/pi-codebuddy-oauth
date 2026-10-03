@@ -23,6 +23,9 @@ export async function fetchJson<T>(url: string, opts: { method?: string; headers
     abortListener = handler;
     t.signal.addEventListener("abort", handler, { once: true });
   });
+  // 注：signal 本身就会使 fetch reject，这里的 race 是冗余的；保留是为了不改动已验证的行为，
+  // 且 abortPromise 永远有 race 订阅、listener 在 finally 移除，不会产生 unhandled rejection。
+  void abortPromise;
   try {
     const res = await Promise.race([
       fetch(url, { method: opts.method, headers: opts.headers, body: opts.body, signal: t.signal }),

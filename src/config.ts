@@ -28,6 +28,8 @@ export interface CodeBuddyConfig {
   tenantId?:string; enterpriseId?:string; userId?:string;
   apiKey?:string; platform:string; appVersion:string; ideName:string; ideType:string; ideVersion:string;
   domain:string; product:string; agentIntent:string; envId:string;
+  /** 11133 瞬时 400 的最大重试次数（CODEBUDDY_TRANSIENT_400_RETRIES，默认 4，退避 1s/4s/10s/25s） */
+  transient400Retries: number;
 }
 
 function num(v: string | undefined, d: number): number {
@@ -47,6 +49,7 @@ export function getConfig(): CodeBuddyConfig {
     enterpriseId: process.env.CODEBUDDY_ENTERPRISE_ID || "",
     userId: process.env.CODEBUDDY_USER_ID || "",
     apiKey: process.env.CODEBUDDY_API_KEY || "",
+    transient400Retries: num(process.env.CODEBUDDY_TRANSIENT_400_RETRIES, 4),
     platform: PLATFORM, appVersion: APP_VERSION, ideName: IDE_NAME, ideType: IDE_TYPE, ideVersion: IDE_VERSION,
     domain: DOMAIN_DEFAULT, product: PRODUCT, agentIntent: AGENT_INTENT, envId: ENV_ID,
   };
