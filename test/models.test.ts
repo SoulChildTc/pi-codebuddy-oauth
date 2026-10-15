@@ -77,9 +77,14 @@ describe("models (pi)", () => {
     expect(p.input).toEqual(["text"]);
   });
 
-  it("supportsImages 未设置时 input 只包含 text", () => {
-    const p = remoteModelToPi({ id: "plain-x", name: "X" });
+  it("supportsImages 未设置时回退 id 启发式（claude/gemini/gpt 系保留图片）", () => {
+    expect(remoteModelToPi({ id: "claude-x", name: "X" }).input).toEqual(["text", "image"]);
+    expect(remoteModelToPi({ id: "plain-x", name: "X" }).input).toEqual(["text"]);
+  });
+  it("supportsImages 显式 false 时不做启发式回退", () => {
+    const p = remoteModelToPi({ id: "claude-x", name: "X", supportsImages: false });
     expect(p.input).toEqual(["text"]);
+    expect(p.inputLimits).toBeUndefined();
   });
 
   it("disabledMultimodal=true 时即使 supportsImages=true 也关闭图片", () => {

@@ -15,6 +15,8 @@ describe("pricing (parse/format)", () => {
     expect(parseCredits("")).toBeNull();
     expect(parseCredits("abc")).toBeNull();
     expect(parseCredits("-1")).toBeNull();
+    expect(parseCredits("x")).toBeNull(); // 无数字，不能误判为 0（免费）
+    expect(parseCredits("x.")).toBeNull();
   });
   it("formatCreditsValue 紧凑显示", () => {
     expect(formatCreditsValue(0.79)).toBe("0.79");
@@ -84,9 +86,22 @@ describe("pricing (促销状态)", () => {
     const promos = [night, free, expired];
     expect(bestPromotion(promos, "glm-5.2", noon)).toBeUndefined();
     expect(bestPromotion(promos, "glm-5.2", new Date("2026-10-15T15:30:00Z"))).toBe(night);
-    expect(anyPromotion(promos, "glm-5.2")).toBe(night); // 白天也返回（用于"即将折扣"提示）
-    expect(anyPromotion(promos, "hy3")).toBe(free);
-    expect(anyPromotion(promos, "unknown")).toBeUndefined();
+    expect(anyPromotion(promos, "glm-5.2", noon)).toBe(night); // 白天也返回（用于"即将折扣"提示）
+    expect(anyPromotion(promos, "hy3", noon)).toBe(free);
+    expect(anyPromotion(promos, "unknown", noon)).toBeUndefined();
+  });
+  it("anyPromotion 排除已过期/未开始/已禁用的促销（footer 不展示死折扣）", () => {
+    const noon = new Date("2026-10-15T04:00:00Z");
+    // expired 的有效期 2026-10-02~10-08，早已过
+    expect(anyPromotion([expired], "space-bunny", noon)).toBeUndefined();
+    // 未开始
+    const future: RemotePromotion = {
+      kind: "discount", enabled: true, modelIds: ["m"],
+      schedule: { validFrom: "2027-01-01T00:00:00+08:00" },
+    };
+    expect(anyPromotion([future], "m", noon)).toBeUndefined();
+    // 已禁用
+    expect(anyPromotion([{ ...night, enabled: false }], "glm-5.2", noon)).toBeUndefined();
   });
   it("promotionWindowText 输出时段与有效期", () => {
     expect(promotionWindowText(night)).toBe("23:00–07:50");
@@ -137,5 +152,11 @@ describe("pricing (价格标签)", () => {
     expect(priceStatusForModel("hy3", "x0.00", [free], noonBeijing)).toBe("hy3 限时免费");
     // 无任何定价信息
     expect(priceStatusForModel("m", undefined, undefined)).toBeUndefined();
+    // 生效中但 label 无法生成（无 badge/无单价的角标促销）→ 不能渲染字面 "undefined"
+    const badgeOnlyNoCredits: RemotePromotion = {
+      kind: "discount", enabled: true, modelIds: ["m2"],
+      schedule: { daily: [{ start: "00:00", end: "23:59" }] },
+    };
+    expect(priceStatusForModel("m2", undefined, [badgeOnlyNoCredits], noonBeijing)).toBe("m2");
   });
 });

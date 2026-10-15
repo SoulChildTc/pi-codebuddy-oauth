@@ -94,6 +94,19 @@ function detectThinking(id: string): boolean {
   return /claude|gemini|gpt-5|hy3|deepseek|glm/i.test(id);
 }
 
+// supportsImages 缺省时的兼容回退：公开网关部分模型（如 completion-1.0、nes-1.1）
+// 不返回该字段，而旧版启发式按 id 猜测已为 claude/gemini/gpt 系开启了图片。
+// 显式 false 仍尊重为不支持；只有缺省才回退。
+function detectImages(id: string): boolean {
+  return /claude|gemini|gpt/i.test(id);
+}
+
+/** 模型是否应注册图片输入（显式标志优先，缺省回退 id 启发式） */
+export function modelSupportsImages(m: RemoteModel): boolean {
+  const flag = m.supportsImages ?? detectImages(m.id);
+  return flag && !m.disabledMultimodal;
+}
+
 /** RemoteModel → Pi ProviderModelConfig 所需字段。
  *  promotions 传入时把积分价格/当前生效折扣拼进 name（pi 的模型选择器
  *  详情行只渲染 name，是唯一能展示价格的入口；搜索文本也包含 name）。 */
@@ -105,7 +118,7 @@ export function remoteModelToPi(m: RemoteModel, promotions?: RemotePromotion[]):
     id: m.id,
     name: priceLabel ? `${m.name} · ${priceLabel}` : m.name,
     reasoning: m.supportsReasoning !== false && detectThinking(m.id),
-    input: (m.supportsImages && !m.disabledMultimodal) ? ["text", "image"] : ["text"],
+    input: modelSupportsImages(m) ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens,
@@ -121,7 +134,7 @@ export function remoteModelToPi(m: RemoteModel, promotions?: RemotePromotion[]):
     if (effort) cfg.thinkingLevelMap.default = effort;
   }
   // 多模态支持：如果模型支持图片输入，添加 inputLimits 配置
-  if (m.supportsImages && !m.disabledMultimodal) {
+  if (modelSupportsImages(m)) {
     cfg.inputLimits = {
       maxRequestBytes: 100 * 1024 * 1024, // 100MB
       images: {

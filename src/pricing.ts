@@ -28,10 +28,12 @@ export interface RemotePromotion {
   hover?: { textZh?: string; textEn?: string };
 }
 
-/** "x0.79" → 0.79；空串/无效输入 → null。 */
+/** "x0.79" → 0.79；空串/无数字（如 "x"）/无效输入 → null。 */
 export function parseCredits(credits: string | undefined | null): number | null {
-  if (typeof credits !== "string" || credits.trim() === "") return null;
-  const n = Number(credits.trim().replace(/^x/i, ""));
+  if (typeof credits !== "string") return null;
+  const m = /^x?(\d+(?:\.\d+)?|\.\d+)$/i.exec(credits.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
@@ -109,14 +111,28 @@ export function bestPromotion(
     .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0];
 }
 
-/** 该模型是否存在促销（不论是否生效）——用于 footer 提示即将到来的折扣时段。 */
+/**
+ * 该模型是否存在值得提示的促销（不论是否此刻生效）——用于 footer “即将折扣”提示。
+ * 排除已禁用以及有效期已过的促销，避免 footer 永久展示已死折扣；
+ * 仅“有效期内但当前不在每日时段内”（如夜间折扣白天查看）才返回。
+ */
 export function anyPromotion(
   promotions: RemotePromotion[] | undefined,
   modelId: string,
+  now: Date = new Date(),
 ): RemotePromotion | undefined {
   if (!promotions?.length) return undefined;
   return promotions
-    .filter((p) => p.kind === "discount" && (p.modelIds ?? []).includes(modelId))
+    .filter((p) => {
+      if (p.kind !== "discount") return false;
+      if (!(p.modelIds ?? []).includes(modelId)) return false;
+      if (p.enabled === false) return false;
+      const until = p.schedule?.validUntil ? Date.parse(p.schedule.validUntil) : undefined;
+      if (until !== undefined && Number.isFinite(until) && now.getTime() >= until) return false;
+      const from = p.schedule?.validFrom ? Date.parse(p.schedule.validFrom) : undefined;
+      if (from !== undefined && Number.isFinite(from) && now.getTime() < from) return false;
+      return true;
+    })
     .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0];
 }
 
@@ -196,8 +212,8 @@ export function priceStatusForModel(
   const base = parseCredits(credits);
   const active = bestPromotion(promotions, modelId, now);
   const label = priceLabelForModel(credits, promotions, modelId, now);
-  if (active) return `${modelId} ${label}`;
-  const upcoming = anyPromotion(promotions, modelId);
+  if (active) return label ? `${modelId} ${label}` : modelId;
+  const upcoming = anyPromotion(promotions, modelId, now);
   if (upcoming) {
     const window = promotionWindowText(upcoming);
     const baseText = base === null ? "" : base === 0 ? "免费" : `${formatCreditsValue(base)}分`;
