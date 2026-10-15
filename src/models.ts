@@ -7,6 +7,7 @@ import { AGENT_INTENT, DISCOVERY_TIMEOUT_MS, IDE_NAME, IDE_TYPE, IDE_VERSION, AP
 export interface RemoteModel { id:string; name:string; maxInputTokens?:number; maxOutputTokens?:number; maxAllowedSize?:number; supportsToolCall?:boolean; supportsImages?:boolean; supportsReasoning?:boolean; disabledMultimodal?:boolean; reasoning?:{ effort?:string; defaultEffort?:string; supportedEfforts?:string[] }; }
 export const DEFAULT_MODEL: RemoteModel = { id:"auto", name:"Auto", maxInputTokens:168000, maxOutputTokens:32000, supportsToolCall:true };
 
+// 与 Pi 类型定义匹配的接口
 export interface PiModelConfig {
   id: string;
   name: string;
@@ -17,6 +18,27 @@ export interface PiModelConfig {
   maxTokens: number;
   thinkingLevelMap?: Record<string, string>;
   compat?: { supportsDeveloperRole?: boolean };
+  // 采样参数（温度、top_p 等）
+  samplingParams?: Record<string, unknown>;
+  // 提示缓存配置（与 Pi 的 ModelPromptCache 匹配）
+  promptCache?: {
+    long?: number;   // 长期缓存预热时间（秒）
+    short?: number;  // 短期缓存预热时间（秒）
+  };
+  // 输入限制（与 Pi 的 ModelInputLimits 匹配）
+  inputLimits?: {
+    maxRequestBytes?: number;
+    images?: {
+      resize?: {
+        maxWidth?: number;
+        maxHeight?: number;
+        maxBytes?: number;
+        jpegQuality?: number;
+      };
+      maxPerMessage?: number;
+      maxPerRequest?: number;
+    };
+  };
 }
 
 export interface RemoteConfigResponse { code:number; data?:{ agents?:Array<{name:string; models?:string[]}>; models?:RemoteModel[] } }
@@ -66,10 +88,6 @@ function detectThinking(id: string): boolean {
   return /claude|gemini|gpt-5|hy3|deepseek|glm/i.test(id);
 }
 
-function detectImages(id: string): boolean {
-  return /claude|gemini|gpt/i.test(id);
-}
-
 /** RemoteModel → Pi ProviderModelConfig 所需字段 */
 export function remoteModelToPi(m: RemoteModel): PiModelConfig {
   const contextWindow = m.maxAllowedSize ?? m.maxInputTokens ?? DEFAULT_CONTEXT;
@@ -78,7 +96,7 @@ export function remoteModelToPi(m: RemoteModel): PiModelConfig {
     id: m.id,
     name: m.name,
     reasoning: m.supportsReasoning !== false && detectThinking(m.id),
-    input: (detectImages(m.id) && !m.disabledMultimodal) ? ["text", "image"] : ["text"],
+    input: (m.supportsImages && !m.disabledMultimodal) ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens,
@@ -93,6 +111,28 @@ export function remoteModelToPi(m: RemoteModel): PiModelConfig {
     cfg.thinkingLevelMap = Object.fromEntries(efforts.map((e) => [e, e]));
     if (effort) cfg.thinkingLevelMap.default = effort;
   }
+  // 多模态支持：如果模型支持图片输入，添加 inputLimits 配置
+  if (m.supportsImages && !m.disabledMultimodal) {
+    cfg.inputLimits = {
+      maxRequestBytes: 100 * 1024 * 1024, // 100MB
+      images: {
+        resize: {
+          maxWidth: 4096,
+          maxHeight: 4096,
+          maxBytes: 10 * 1024 * 1024, // 10MB
+          jpegQuality: 85,
+        },
+        maxPerMessage: 10,
+        maxPerRequest: 10,
+      },
+    };
+  }
+  // 提示缓存：CodeBuddy 支持 prompt cache
+  // short: 5分钟，long: 1小时
+  cfg.promptCache = {
+    short: 300,
+    long: 3600,
+  };
   return cfg;
 }
 
