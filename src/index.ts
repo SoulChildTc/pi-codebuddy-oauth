@@ -128,6 +128,10 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   const creditsById = new Map<string, string | undefined>();
 
   function modelsFromRemote(remote: RemoteConfig) {
+    // 空模型列表 = 发现失败/空响应（fetchRemoteConfig 对非 ok、code≠0 返回 []）。
+    // 调用方随后会放弃注册，这里也必须先返回，绝不能清空调价状态——
+    // 否则一次失败的刷新会把 footer/选择器已显示的价格抹掉（review 反馈）。
+    if (!remote.models.length) return [];
     latestPromotions = remote.promotions;
     creditsById.clear();
     for (const m of remote.models) creditsById.set(m.id, m.credits);
@@ -217,6 +221,8 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
             if (models.length) {
               registeredModels = models;
               await writeCachedConfig(remote);
+              // 注册名已带新价格标签，footer 状态行同步刷新（否则停留旧价到下个 turn_end）
+              refreshPricingStatus();
               return models as any;
             }
           } catch (e) {
@@ -268,7 +274,10 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     lastCtx = ctx;
     refreshPricingStatus(ctx);
   });
-  pi.on("turn_end", () => {
-    refreshPricingStatus();
+  // turn_end 用事件自身的 ctx：若依赖 session_start/model_select 捕获的 lastCtx，
+  // 外部 reload 后可能从未捕获过 ctx → footer 静默不再刷新；事件 ctx 也不会是陈旧引用
+  pi.on("turn_end", (_event, ctx) => {
+    lastCtx = ctx;
+    refreshPricingStatus(ctx);
   });
 }

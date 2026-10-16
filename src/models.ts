@@ -19,8 +19,6 @@ export interface PiModelConfig {
   maxTokens: number;
   thinkingLevelMap?: Record<string, string>;
   compat?: { supportsDeveloperRole?: boolean };
-  // 采样参数（温度、top_p 等）
-  samplingParams?: Record<string, unknown>;
   // 提示缓存配置（与 Pi 的 ModelPromptCache 匹配）
   promptCache?: {
     long?: number;   // 长期缓存预热时间（秒）
@@ -136,7 +134,10 @@ export function remoteModelToPi(m: RemoteModel, promotions?: RemotePromotion[]):
   // 多模态支持：如果模型支持图片输入，添加 inputLimits 配置
   if (modelSupportsImages(m)) {
     cfg.inputLimits = {
-      maxRequestBytes: 100 * 1024 * 1024, // 100MB
+      // 上限必须覆盖最坏情况：maxPerRequest 张 × resize.maxBytes 原图经 base64
+      // 编码约 +33%（10 × 10MB ≈ 137MB），再加文本/JSON 载荷。旧值 100MB 会在
+      // 用户用满图片预算时被自身上限截断（review 反馈：cap 与预算不自洽）。
+      maxRequestBytes: 200 * 1024 * 1024,
       images: {
         resize: {
           maxWidth: 4096,
