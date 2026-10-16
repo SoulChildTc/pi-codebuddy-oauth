@@ -17,51 +17,54 @@ import * as fs from "fs/promises";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import type { PiModelConfig } from "./models.js";
+import type { RemoteModel } from "./models.js";
 
-const CACHE_VERSION = 1;
+// v1: PiModelConfig[]（旧映射结果会随映射逻辑升级而滞留）；
+// v2: 原始 RemoteModel[]，启动时经 remoteModelToPi 重新映射，
+// 这样映射逻辑升级（如多模态）自动作用于缓存种子。
+const CACHE_VERSION = 2;
 // 缓存过期只用于日志提示；过期后仍会作为启动种子使用（有 15 个模型好过只有 auto）
 const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface CacheDocument {
   version: number;
   updatedAt: number;
-  models: PiModelConfig[];
+  remote?: RemoteModel[];
 }
 
 export function getModelCachePath(): string {
   return join(homedir(), CONFIG_DIR_NAME || ".pi", "agent", "codebuddy-models-cache.json");
 }
 
-function isValidModel(value: unknown): value is PiModelConfig {
+function isValidRemoteModel(value: unknown): value is RemoteModel {
   if (typeof value !== "object" || value === null) return false;
   const m = value as Record<string, unknown>;
   return typeof m.id === "string" && m.id.length > 0;
 }
 
-/** 读取缓存的模型列表；缺失、损坏或为空时返回 []。永不抛错。 */
-export async function readCachedModels(): Promise<PiModelConfig[]> {
+/** 读取缓存的原始模型列表；缺失、损坏、版本过旧或为空时返回 undefined。永不抛错。 */
+export async function readCachedConfig(): Promise<RemoteModel[] | undefined> {
   try {
     const raw = await fs.readFile(getModelCachePath(), "utf8");
     const parsed = JSON.parse(raw) as Partial<CacheDocument>;
-    if (parsed?.version !== CACHE_VERSION) return [];
-    if (!Array.isArray(parsed.models)) return [];
-    const models = parsed.models.filter(isValidModel);
-    if (models.length === 0) return [];
+    if (parsed?.version !== CACHE_VERSION) return undefined;
+    if (!Array.isArray(parsed.remote)) return undefined;
+    const models = parsed.remote.filter(isValidRemoteModel);
+    if (models.length === 0) return undefined;
     if (typeof parsed.updatedAt === "number" && Date.now() - parsed.updatedAt > STALE_AFTER_MS) {
       // 过期但仍返回：种子再旧也比只有 auto 强，发现成功后会被覆盖
     }
     return models;
   } catch {
-    return [];
+    return undefined;
   }
 }
 
 /** 写入缓存（先写临时文件再 rename，避免读到半截内容）。永不抛错。 */
-export async function writeCachedModels(models: PiModelConfig[]): Promise<void> {
+export async function writeCachedConfig(models: RemoteModel[]): Promise<void> {
   if (!models?.length) return;
   const path = getModelCachePath();
-  const doc: CacheDocument = { version: CACHE_VERSION, updatedAt: Date.now(), models };
+  const doc: CacheDocument = { version: CACHE_VERSION, updatedAt: Date.now(), remote: models };
   try {
     await fs.mkdir(dirname(path), { recursive: true });
     const tmp = `${path}.tmp`;

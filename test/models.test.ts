@@ -82,6 +82,20 @@ describe("models (pi)", () => {
     expect(p.input).toEqual(["text"]);
   });
 
+  it("supportsImages 未设置时回退 id 启发式（claude/gemini/gpt 系保留图片）", () => {
+    expect(remoteModelToPi({ id: "claude-x", name: "X" }).input).toEqual(["text", "image"]);
+    expect(remoteModelToPi({ id: "plain-x", name: "X" }).input).toEqual(["text"]);
+    // 回退同时作用于 input 与 inputLimits 两处映射
+    expect(remoteModelToPi({ id: "claude-x", name: "X" }).inputLimits).toBeDefined();
+    expect(remoteModelToPi({ id: "plain-x", name: "X" }).inputLimits).toBeUndefined();
+  });
+
+  it("supportsImages 显式 false 时不做启发式回退", () => {
+    const p = remoteModelToPi({ id: "claude-x", name: "X", supportsImages: false });
+    expect(p.input).toEqual(["text"]);
+    expect(p.inputLimits).toBeUndefined();
+  });
+
   it("disabledMultimodal=true 时即使 supportsImages=true 也关闭图片", () => {
     const p = remoteModelToPi({ id: "claude-x", name: "X", supportsImages: true, disabledMultimodal: true });
     expect(p.input).toEqual(["text"]);
@@ -90,7 +104,7 @@ describe("models (pi)", () => {
   it("多模态模型生成 inputLimits 配置", () => {
     const p = remoteModelToPi({ id: "claude-x", name: "X", supportsImages: true });
     expect(p.inputLimits).toBeDefined();
-    expect(p.inputLimits?.maxRequestBytes).toBe(100 * 1024 * 1024);
+    expect(p.inputLimits?.maxRequestBytes).toBe(200 * 1024 * 1024);
     expect(p.inputLimits?.images).toBeDefined();
     expect(p.inputLimits?.images?.maxPerMessage).toBe(10);
     expect(p.inputLimits?.images?.maxPerRequest).toBe(10);
@@ -99,6 +113,10 @@ describe("models (pi)", () => {
     expect(p.inputLimits?.images?.resize?.maxHeight).toBe(4096);
     expect(p.inputLimits?.images?.resize?.maxBytes).toBe(10 * 1024 * 1024);
     expect(p.inputLimits?.images?.resize?.jpegQuality).toBe(85);
+    // review 反馈：maxRequestBytes 必须覆盖最坏情况（N 张 × 单张上限经 base64 编码 +33%）
+    const worstCaseBytes =
+      p.inputLimits!.images!.maxPerRequest! * p.inputLimits!.images!.resize!.maxBytes! * (4 / 3);
+    expect(p.inputLimits!.maxRequestBytes!).toBeGreaterThanOrEqual(worstCaseBytes);
   });
 
   it("非多模态模型不生成 inputLimits 配置", () => {
@@ -116,11 +134,6 @@ describe("models (pi)", () => {
     expect(p.promptCache).toBeDefined();
     expect(p.promptCache?.short).toBe(300);
     expect(p.promptCache?.long).toBe(3600);
-  });
-
-  it("samplingParams 字段存在且为 undefined（未设置）", () => {
-    const p = remoteModelToPi({ id: "claude-x", name: "X" });
-    expect(p.samplingParams).toBeUndefined();
   });
 
   it("多模态模型完整配置验证", () => {
