@@ -5,8 +5,8 @@
 // 3. 透传 Pi 的 onPayload / onResponse / sessionId / transformHeaders 等约定参数
 import type {
   AssistantMessageEventStream,
-  Context,
   Model,
+  TranscriptContext,
   ProviderHeaders,
   SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
@@ -28,7 +28,7 @@ export function createCodebuddyStreamSimple(fetchFn: FetchFn, extra?: CodebuddyS
   const builtin = openAICompletionsApi().streamSimple;
   return function streamCodebuddy(
     model: Model<any>,
-    context: Context,
+    context: TranscriptContext,
     options?: SimpleStreamOptions,
   ): AssistantMessageEventStream {
     const dynamicHeaders = extra?.buildHeaders?.(model, options);
