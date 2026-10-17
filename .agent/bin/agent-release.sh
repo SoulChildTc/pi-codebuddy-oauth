@@ -20,6 +20,22 @@ git fetch --no-tags origin main --depth=1 >/dev/null 2>&1 || true
 current_version="$(jq -r .version package.json)"
 last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 
+# Self-heal: a tag pushed without a successful publish (failed run) must be finished,
+# not skipped. Detect a tag whose version was never published, then publish it.
+if [[ -n "$last_tag" ]]; then
+  tag_version="${last_tag#v}"
+  if ! npm view "$(jq -r .name package.json)@$tag_version" version >/dev/null 2>&1; then
+    log "found unpublished tag $last_tag; publishing it before anything else"
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY_RUN: would publish $tag_version"
+    else
+      npm publish --provenance --access public || {
+        notify "❌ 补发 $tag_version 失败，需手动执行 npm publish"; exit 1; }
+      notify "✅ 补发 v$tag_version 成功"
+    fi
+  fi
+fi
+
 # Collect merged PRs since the previous release tag, or since BASE_SHA when no tag exists.
 if [[ -n "$last_tag" ]]; then range="$last_tag..HEAD"; else range="$(git rev-list --max-parents=0 HEAD | tail -1)..HEAD"; fi
 
@@ -114,20 +130,26 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git add package.json package-lock.json CHANGELOG.md 2>/dev/null || git add package.json CHANGELOG.md
 git commit -m "chore: release v$next_version" >/dev/null
 
-# Publish BEFORE pushing the tag so a failed publish never leaves a tag without a package.
+# Push the release commit and tag BEFORE publishing. Pushing is idempotent and
+# retryable; a failed push must never leave npm with a version that does not exist
+# in the repository (which would break every subsequent release).
+log "pushing release commit and tag"
+git push origin HEAD:main
+git tag -f "v$next_version"
+git push origin "v$next_version" --force
+
+# Publish after the tag is on the remote: if this step fails, the next run sees
+# the tag and does not attempt a duplicate version.
 log "publishing to npm"
 if ! npm publish --provenance --access public; then
   log "npm publish failed; retrying once"
   sleep 15
   npm publish --provenance --access public || {
-    notify "❌ v$next_version 发布 npm 失败，提交已本地生成但未推送"
+    notify "❌ v$next_version 已打 tag 但 npm 发布失败
+手动执行: npm publish --provenance --access public"
     exit 1
   }
 fi
-
-git push origin HEAD:main
-git tag "v$next_version"
-git push origin "v$next_version"
 
 gh release create "v$next_version" --repo "$REPO" \
   --title "v$next_version" --notes-file "$OUT/changelog.md" >/dev/null 2>&1 || log "gh release create failed"

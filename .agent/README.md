@@ -98,3 +98,12 @@ Version policy: `release:minor` on a PR bumps the minor version, otherwise patch
 - The reviewer reads a snapshot of the PR tree plus a diff; it does not build the
   PR. Test execution happens only in `agent-test`, on the runner, isolated.
 - Issue triage can classify and explain, but does not write fix PRs yet.
+- **First rollout:** `workflow_run` triggers only fire for workflows that already
+  exist on the default branch. So `agent-pr.yml` starts reacting to `agent-test`
+  completions only after this change is merged to `main`. Until then, start PR
+  reviews manually with the `agent-pr` workflow (`workflow_dispatch`).
+- `agent-pr` and `agent-release` both write to `main`; if a protected branch rule
+  requires human review, merges and release pushes will fail. Either allow
+  `github-actions[bot]` on `main`, or keep the rules and accept that the agent
+  reports "merge failed" instead of merging.
+
