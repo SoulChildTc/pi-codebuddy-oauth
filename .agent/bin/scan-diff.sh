@@ -31,13 +31,16 @@ if printf '%s\n' "$added_lines" | grep -qE '\b(child_process|execSync|spawnSync|
 fi
 
 # --- outbound hosts against a known-good allowlist -----------------------------
+# Only complete hostnames with a dot are considered: diff headers such as
+# "+++ b/x" and prose fragments produce single-token noise otherwise.
 while IFS= read -r h; do
   [[ -z "$h" ]] && continue
+  [[ "$h" == *.* ]] || continue
   case "$h" in
     *tencent.com|*codebuddy.cn|*codebuddy.ai|*github.com|*githubusercontent.com|*npmjs.com|*npmjs.org) ;;
     *) add_flag medium new-host "diff references outbound host: $h" ;;
   esac
-done <<< "$(printf '%s\n' "$added_lines" | grep -oE 'https?://[a-zA-Z0-9._-]+' | sed -E 's#https?://##' | sort -u || true)"
+done <<< "$(printf '%s\n' "$added_lines" | grep -oE 'https?://[a-zA-Z0-9][a-zA-Z0-9._-]*\.[a-zA-Z]{2,}' | sed -E 's#https?://##' | sort -u || true)"
 
 # --- obfuscation ---------------------------------------------------------------
 if printf '%s\n' "$added_lines" | grep -qE 'atob\(|Buffer\.from\([^)]*(base64|hex)'; then

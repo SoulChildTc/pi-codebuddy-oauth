@@ -31,33 +31,45 @@ TITLE="$(jq -r '.title' <<<"$pr_json")"
 AUTHOR="$(jq -r '.author.login' <<<"$pr_json")"
 MERGEABLE="$(jq -r '.mergeable' <<<"$pr_json")"
 
-# Fetch the PR head into a private ref (no checkout, no execution).
-# Full fetch (not shallow): merge-base is needed to compute the real changed files.
-# Shallow fetches silently break merge-base and would make the scanner see zero files.
+# Fetch the PR head and base branch into private refs (no checkout, no execution).
+# Unshallow/deepen first: a shallow repository makes merge-base fail, and a missing
+# merge base would silently defeat the scanner.
+if [[ -f "$(git rev-parse --git-dir)/shallow" ]]; then
+  log "repository is shallow; unshallowing to compute the merge base"
+  git fetch --unshallow origin 2>/dev/null || git fetch --deepen=500 origin 2>/dev/null || true
+fi
 git fetch --no-tags origin "+refs/pull/$PR/head:refs/agent/pr-$PR" >/dev/null 2>&1 || {
   log "failed to fetch PR head"; exit 1; }
 BASE_REF="$(jq -r '.baseRefName' <<<"$pr_json")"
 git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/agent/base-$PR" >/dev/null 2>&1 || true
 
-# Changed files: prefer the API (authoritative, no git ancestry needed), fall back to git.
+# Changed files come from the API (authoritative subset of what the PR touches).
 changed_files="$(jq -r '.files[].path' <<<"$pr_json")"
-if [[ -z "$changed_files" ]]; then
-  base_ref="$(jq -r '.baseRefName' <<<"$pr_json")"
-  if base="$(git merge-base "refs/agent/base-$PR" "refs/agent/pr-$PR" 2>/dev/null)"; then
-    changed_files="$(git diff --name-only "$base" "refs/agent/pr-$PR")"
-  else
-    log "merge-base unavailable; relying on API file list"
-  fi
+
+# Diff must cover exactly the files this PR touches, against the merge base.
+# Computing it as "root..head" would include the whole repository and silently
+# defeat the scanner, so an unavailable merge base fails closed instead.
+base_commit=""
+if base_commit="$(git merge-base "refs/agent/base-$PR" "refs/agent/pr-$PR" 2>/dev/null)"; then
+  log "merge-base: $base_commit"
+else
+  log "ERROR: no merge base between PR head and $BASE_REF; refusing to review"
+  notify "⚠️ PR #$PR：无法计算与 $BASE_REF 的共同祖先，已跳过自动审查（不合并）"
+  exit 0
 fi
 
-# Diff: use the API-provided patch when git ancestry is unavailable (shallow clone).
-git diff --no-color "refs/agent/pr-$PR^!" > "$CTX/diff.patch" 2>/dev/null || true
-if [[ ! -s "$CTX/diff.patch" ]] || [[ "$(wc -l < "$CTX/diff.patch")" -lt 5 ]]; then
-  : > "$CTX/diff.patch"
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    git diff --no-color "$(git rev-list --max-parents=0 refs/agent/pr-$PR | tail -1)" "refs/agent/pr-$PR" -- "$f" >> "$CTX/diff.patch" 2>/dev/null || true
-  done <<< "$changed_files"
+: > "$CTX/diff.patch"
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  git diff --no-color "$base_commit" "refs/agent/pr-$PR" -- "$f" >> "$CTX/diff.patch" 2>/dev/null || true
+done <<< "$changed_files"
+
+diff_lines="$(wc -l < "$CTX/diff.patch" 2>/dev/null || echo 0)"
+log "diff lines: $diff_lines (across $(printf '%s\n' "$changed_files" | grep -c . || true) changed file(s))"
+if [[ "$diff_lines" -lt 1 ]]; then
+  log "ERROR: empty diff although the PR reports changes; refusing to review"
+  notify "⚠️ PR #$PR：diff 为空，已跳过自动审查（不合并）"
+  exit 0
 fi
 
 # Extract the PR tree as read-only reference material for the agent.
