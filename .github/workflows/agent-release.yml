@@ -1,0 +1,69 @@
+name: agent-release
+
+# Publishes to npm on a push to main (i.e. only code that was already merged by the
+# merge gate). Uses npm Trusted Publishing (OIDC) - no npm token is stored.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.agent/**'
+      - '.github/**'
+
+permissions:
+  contents: write
+  id-token: write      # OIDC for npm provenance + trusted publishing
+
+concurrency:
+  group: agent-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Never re-release for the bot's own release commits.
+    if: "!startsWith(github.event.head_commit.message, 'chore: release v')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install opencode
+        run: npm install --global @opencode/cli
+
+      # Verify the merged tree before publishing it.
+      - name: Sanity check
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run typecheck
+          npm test
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          DEFAULT_MODEL: ${{ vars.AGENT_MODEL }}
+          FALLBACK_MODEL: ${{ vars.AGENT_FALLBACK_MODEL }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          ./.agent/bin/agent-release.sh "${{ github.event.before }}"
+
+      - name: Upload agent log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.run_id }}-agent-log
+          path: .agent/out/run.log
+          retention-days: 14
+          if-no-files-found: ignore

@@ -1,0 +1,82 @@
+name: agent-backlog
+
+# One-off sweep over the existing backlog, triggered manually. Walks the same
+# triage/review/merge path as the event-driven workflows, sequentially, so each
+# step sees the effects of the previous one.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to process
+        type: choice
+        options: [all, issues-only, prs-only]
+        default: all
+      dry_run:
+        description: Analyze and report without merging or posting
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: agent-backlog
+  cancel-in-progress: false
+
+jobs:
+  backlog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install opencode
+        run: npm install --global @opencode/cli
+
+      - name: Process backlog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          MODE: ${{ github.event.inputs.mode }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          DEFAULT_MODEL: ${{ vars.AGENT_MODEL }}
+          FALLBACK_MODEL: ${{ vars.AGENT_FALLBACK_MODEL }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # Oldest first: triage informs PR review, and earlier PRs merge first.
+          issues="$(gh issue list --repo "$REPO" --state open --json number \
+            --jq 'sort_by(.number) | .[].number')"
+          prs="$(gh pr list --repo "$REPO" --state open --json number,createdAt \
+            --jq 'sort_by(.createdAt) | .[].number')"
+
+          if [[ "$MODE" != "prs-only" ]]; then
+            while IFS= read -r n; do
+              [[ -z "$n" ]] && continue
+              echo "::group::issue #$n"
+              ./.agent/bin/agent-issue.sh "$n" || true
+              echo "::endgroup::"
+            done <<< "$issues"
+          fi
+
+          if [[ "$MODE" != "issues-only" ]]; then
+            while IFS= read -r n; do
+              [[ -z "$n" ]] && continue
+              echo "::group::pr #$n"
+              ./.agent/bin/agent-pr.sh "$n" || true
+              echo "::endgroup::"
+            done <<< "$prs"
+          fi

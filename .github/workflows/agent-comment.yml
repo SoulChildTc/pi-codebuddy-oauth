@@ -1,0 +1,59 @@
+name: agent-comment
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write       # needed when a comment triggers a review re-run
+  issues: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: agent-comment-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  reply:
+    # Only react to comments from people, never to the agent's own comments (loop guard).
+    if: |
+      github.event.comment.user.type != 'Bot' &&
+      !contains(github.event.comment.body, '<!-- pi-codebuddy-agent:v1 -->')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install opencode
+        run: npm install --global @opencode/cli
+
+      - name: Answer comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          ITEM_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          DEFAULT_MODEL: ${{ vars.AGENT_MODEL }}
+          FALLBACK_MODEL: ${{ vars.AGENT_FALLBACK_MODEL }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          ./.agent/bin/agent-comment.sh "$ITEM_NUMBER" "$COMMENT_ID"
+
+      - name: Upload agent log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: comment-${{ github.event.comment.id }}-agent-log
+          path: .agent/out/run.log
+          retention-days: 7
+          if-no-files-found: ignore

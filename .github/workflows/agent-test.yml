@@ -1,0 +1,49 @@
+name: agent-test
+
+# SECURITY: the only workflow that executes pull-request code.
+# It has read-only repository access and references no secrets, so an
+# attacker who owns the PR gains nothing by executing code here.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-test-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+        run: echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      # Checks out trusted main (this script), then fetches and checks out the PR head.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies and run the suite
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          ./.agent/bin/agent-test.sh "$PR_NUMBER"
