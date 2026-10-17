@@ -71,54 +71,13 @@ tree_count="$(find "$CTX/tree" -type f 2>/dev/null | wc -l | tr -d ' ')"
 log "PR tree files: $tree_count"
 
 # ------------------------------------------------------------- deterministic scan
-sensitive_hits=()
-while IFS= read -r f; do
-  [[ -z "$f" ]] && continue
-  if [[ "$f" =~ $SENSITIVE_RE ]]; then sensitive_hits+=("$f"); fi
-done <<< "$changed_files"
-
-flags_json='[]'
-sensitive_json='[]'
-add_flag() { # severity code detail
-  flags_json="$(jq -c --arg s "$1" --arg c "$2" --arg d "$3" '. + [{severity:$s, code:$c, detail:$d}]' <<<"$flags_json")"
-}
-add_sensitive() { # path
-  sensitive_json="$(jq -c --arg p "$1" '. + [$p] | unique' <<<"$sensitive_json")"
-}
-for f in "${sensitive_hits[@]:-}"; do
-  [[ -n "$f" ]] && add_sensitive "$f"
-done
-
-added_lines="$(grep -E '^\+' "$CTX/diff.patch" | grep -v '^+++' || true)"
-
-# Command execution primitives.
-if printf '%s\n' "$added_lines" | grep -qE '\b(child_process|execSync|spawnSync|execFileSync|eval\(|new Function\()'; then
-  add_flag high command-execution "diff adds process execution or dynamic code evaluation"
-fi
-# Outbound host allowlist.
-new_hosts="$(printf '%s\n' "$added_lines" | grep -oE 'https?://[a-zA-Z0-9._-]+' | sed -E 's#https?://##' | sort -u || true)"
-while IFS= read -r h; do
-  [[ -z "$h" ]] && continue
-  case "$h" in
-    *tencent.com|*codebuddy.cn|*codebuddy.ai|*github.com|*githubusercontent.com|*npmjs.com|*npmjs.org) ;;
-    *) add_flag medium new-host "diff references outbound host: $h" ;;
-  esac
-done <<< "$new_hosts"
-# Obfuscation markers.
-if printf '%s\n' "$added_lines" | grep -qE 'atob\(|Buffer\.from\([^)]*(base64|hex)' ; then
-  add_flag medium obfuscation "diff decodes base64/hex payloads"
-fi
-# Zero-width / bidi control characters (portable: no grep -P on macOS).
-if LC_ALL=C printf '%s\n' "$added_lines" | grep -qE $'\u200b|\u202e|\u2066|\u2069'; then
-  add_flag high unicode-trick "diff contains zero-width or bidi control characters"
-fi
-
-jq -n --argjson sensitive "$sensitive_json" \
-      --argjson flags "$flags_json" \
-      '{sensitive_paths:$sensitive, flags:$flags}' > "$CTX/scan.json"
+# Delegated to scan-diff.sh so the tested scanner and the enforcing scanner are the
+# same code.
+"$ROOT/.agent/bin/scan-diff.sh" "$CTX/diff.patch" > "$CTX/scan.json"
 
 sensitive_count="$(jq '.sensitive_paths | length' "$CTX/scan.json")"
 max_sev="$(jq -r '[.flags[].severity] | if length==0 then "none" elif index("high") then "high" elif index("medium") then "medium" else "low" end' "$CTX/scan.json")"
+log "scan: ${sensitive_count} sensitive path(s), max severity ${max_sev}"
 
 # ------------------------------------------------------------ review-failure state
 reset_review_labels() {

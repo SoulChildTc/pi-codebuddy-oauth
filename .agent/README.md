@@ -2,7 +2,6 @@
 
 Automated maintenance for this repository: triage issues, review pull requests,
 merge what passes the gates, and publish releases. Runs entirely in GitHub Actions.
-
 ## Why it is safe to let it merge
 
 The agent never gets a merge button. It produces **artifacts**; a trusted shell

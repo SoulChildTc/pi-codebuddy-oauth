@@ -47,3 +47,20 @@ jobs:
         run: |
           set -euo pipefail
           ./.agent/bin/agent-test.sh "$PR_NUMBER"
+
+  # The agent's own defences must keep working in every PR, including PRs that
+  # modify them. These checks are static (no PR code executed).
+  guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run guard self-tests
+        run: |
+          set -euo pipefail
+          ./.agent/bin/selftest.sh
+          ./.agent/bin/attack-samples.sh
