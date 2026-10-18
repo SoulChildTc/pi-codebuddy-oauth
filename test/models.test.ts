@@ -35,6 +35,20 @@ describe("models (pi)", () => {
     const p = remoteModelToPi({ id: "claude-x", name: "X", supportsImages: true, disabledMultimodal: true });
     expect(p.input).toEqual(["text"]);
   });
+  it("以网关 supportsImages 为准，不受模型 ID 白名单限制", () => {
+    // 网关 /v3/config 对 craft agent 的 16 个模型（含 deepseek/glm/kimi/minimax/hunyuan）
+    // 全标了 supportsImages=true，但 ID 不含 claude|gemini|gpt，旧实现一律降级为纯文本。
+    for (const id of ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3-1", "minimax-m3", "hy3"]) {
+      expect(remoteModelToPi({ id, name: id, supportsImages: true }).input).toEqual(["text", "image"]);
+    }
+  });
+  it("缺省 supportsImages 时回退 ID 白名单", () => {
+    expect(remoteModelToPi({ id: "claude-x", name: "X" }).input).toEqual(["text", "image"]);
+    expect(remoteModelToPi({ id: "deepseek-v4.1-flash", name: "D" }).input).toEqual(["text"]);
+  });
+  it("supportsImages=false 优先于 ID 白名单", () => {
+    expect(remoteModelToPi({ id: "gemini-x", name: "G", supportsImages: false }).input).toEqual(["text"]);
+  });
   it("reasoning 模型强制 system 角色（CodeBuddy 拒绝 developer → 400）", () => {
     const p = remoteModelToPi({ id: "claude-x", name: "X", supportsReasoning: true });
     expect(p.compat?.supportsDeveloperRole).toBe(false);
