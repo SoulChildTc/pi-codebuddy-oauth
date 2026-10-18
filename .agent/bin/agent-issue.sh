@@ -42,6 +42,16 @@ EOF
 
 run_agent triager "$CTX/triage-prompt.txt"
 
+if [[ ! -s "$OUT/labels.json" ]] && [[ ! -s "$OUT/comment.md" ]]; then
+  ensure_labels "agent-error"
+  ghm issue edit "$ISSUE" --repo "$REPO" --add-label agent-error >/dev/null 2>&1 || true
+  notify "⚠️ issue #$ISSUE 自动分诊未能完成（模型不可用/限流），本轮未做任何改动
+$TITLE
+可重试：Actions → agent-issue → Run workflow → issue 号 $ISSUE"
+  log "triager produced no artifacts (likely model failure); alerted"
+  exit 0
+fi
+
 if [[ ! -s "$OUT/labels.json" ]]; then
   log "no labels artifact; leaving issue untouched"
   notify "⚠️ issue #$ISSUE 分诊未产出标签，未做改动

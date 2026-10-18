@@ -160,8 +160,18 @@ Write .agent/out/verdict.json and .agent/out/comment.md exactly as specified in 
 EOF
 
 run_agent reviewer "$CTX/review-prompt.txt"
-require_artifact "$OUT/verdict.json"
-require_artifact "$OUT/comment.md"
+if [[ ! -s "$OUT/verdict.json" ]] || [[ ! -s "$OUT/comment.md" ]]; then
+  # Fail closed AND make it visible: with free models, rate limits make this the
+  # most likely failure mode, and silence would look like "nothing to do".
+  ensure_labels "agent-error"
+  ghm pr edit "$PR" --repo "$REPO" --add-label agent-error >/dev/null 2>&1 || true
+  notify "⚠️ PR #$PR 自动审查未能完成（模型不可用/限流），本轮未做任何改动
+$TITLE
+作者：$AUTHOR
+可重试：Actions → agent-pr → Run workflow → PR 号 $PR"
+  log "reviewer produced no verdict (likely model failure); alerted"
+  exit 0
+fi
 
 verdict="$(cat "$OUT/verdict.json")"
 jq -e 'type=="object" and has("approve") and has("risk_level") and has("sensitive_files_touched")
@@ -212,10 +222,21 @@ EOF
     ensure_labels "needs-human"
     ghm pr edit "$PR" --repo "$REPO" --add-label needs-human >/dev/null 2>&1 || true
     [[ -s "${OUT}/security-comment.md" ]] && post_comment "$PR" "$OUT/security-comment.md"
-    notify "🚨 PR #$PR 触及敏感路径/可疑代码，未通过安全二次审查，需人工确认
+    # Distinguish "the model says no" from "the model never ran": the second is an
+    # infrastructure failure, not a security finding, and should say so.
+    if [[ -s "$OUT/verdict.json" ]] && jq -e 'has("approve")' <<<"$sec_verdict" >/dev/null 2>&1; then
+      notify "🚨 PR #$PR 未通过安全二次审查，需人工确认
 $TITLE
 作者：$AUTHOR"
-    log "PR #$PR: security pass rejected"
+      log "PR #$PR: security pass rejected"
+    else
+      ensure_labels "agent-error"
+      ghm pr edit "$PR" --repo "$REPO" --add-label agent-error >/dev/null 2>&1 || true
+      notify "⚠️ PR #$PR 安全二次审查未能完成（模型不可用/限流），本轮未合并
+$TITLE
+可重试：Actions → agent-pr → Run workflow → PR 号 $PR"
+      log "PR #$PR: security pass produced no verdict; alerted"
+    fi
     exit 0
   fi
   [[ -s "${OUT}/security-comment.md" ]] && post_comment "$PR" "$OUT/security-comment.md"

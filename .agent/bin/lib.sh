@@ -60,7 +60,7 @@ notify() { # notify "text"
 }
 
 # Allowed triage labels (name -> color). Scripts refuse labels outside these sets.
-TRIAGE_LABELS="bug question enhancement documentation duplicate invalid needs-info verified needs-human"
+TRIAGE_LABELS="bug question enhancement documentation duplicate invalid needs-info verified needs-human agent-error"
 
 ensure_labels() { # space separated label names
   local existing l
@@ -77,6 +77,7 @@ ensure_labels() { # space separated label names
         needs-info)     ghm label create "$l" --color fbca04 --description "Needs more information" ;;
         verified)       ghm label create "$l" --color 0e8a16 --description "Verified against the code" ;;
         needs-human)    ghm label create "$l" --color b60205 --description "Maintainer decision required" ;;
+        agent-error)    ghm label create "$l" --color fbca04 --description "Automation could not complete this run" ;;
         review:approved)            ghm label create "$l" --color 0e8a16 --description "Agent review: approved" ;;
         review:changes-requested)   ghm label create "$l" --color d73a4a --description "Agent review: changes requested" ;;
         release:minor)              ghm label create "$l" --color 1d76db --description "Next release: minor bump" ;;
