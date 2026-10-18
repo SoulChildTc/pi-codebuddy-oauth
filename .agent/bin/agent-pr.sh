@@ -54,7 +54,7 @@ if base_commit="$(git merge-base "refs/agent/base-$PR" "refs/agent/pr-$PR" 2>/de
   log "merge-base: $base_commit"
 else
   log "ERROR: no merge base between PR head and $BASE_REF; refusing to review"
-  notify "⚠️ PR #$PR：无法计算与 $BASE_REF 的共同祖先，已跳过自动审查（不合并）"
+  notify "⚠️ PR #${PR}：无法计算与 $BASE_REF 的共同祖先，已跳过自动审查（不合并）"
   exit 0
 fi
 
@@ -68,7 +68,7 @@ diff_lines="$(wc -l < "$CTX/diff.patch" 2>/dev/null || echo 0)"
 log "diff lines: $diff_lines (across $(printf '%s\n' "$changed_files" | grep -c . || true) changed file(s))"
 if [[ "$diff_lines" -lt 1 ]]; then
   log "ERROR: empty diff although the PR reports changes; refusing to review"
-  notify "⚠️ PR #$PR：diff 为空，已跳过自动审查（不合并）"
+  notify "⚠️ PR #${PR}：diff 为空，已跳过自动审查（不合并）"
   exit 0
 fi
 
@@ -106,7 +106,7 @@ fail_pr() { # reason comment_body [security]
   notify "⚠️ PR #$PR (by $AUTHOR) 未合并：$reason
 $TITLE"
   if [[ "$security" == "security" ]]; then
-    notify "🚨 安全警示 PR #$PR：$reason"
+    notify "🚨 安全警示 PR #${PR}：$reason"
   fi
   log "PR #$PR blocked: $reason"
   exit 0
@@ -276,7 +276,7 @@ ghm pr merge "$PR" --repo "$REPO" --squash --delete-branch=false \
   --subject "$TITLE (#$PR)" 2>&1 | tail -3 || {
     log "merge failed"; notify "⚠️ PR #$PR 审查通过但合并失败（可能分支保护/权限限制）"; exit 0; }
 
-notify "✅ 已合并 PR #$PR（$AUTHOR）
+notify "✅ 已合并 PR #${PR}（${AUTHOR}）
 $TITLE
 → 触发自动发布"
 log "PR #$PR merged"

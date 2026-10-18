@@ -62,6 +62,16 @@ allowed=" $TRIAGE_LABELS needs-human "
 check "allows known label" "[[ '$allowed' == *' bug '* ]]"
 check "rejects unknown label" "[[ '$allowed' != *' approved-by-me '* ]]"
 
+echo "== shell hygiene =="
+# A variable immediately followed by a multi-byte character (e.g. Chinese
+# punctuation) is parsed as part of the name and fails under set -u.
+check "no unbraced var before non-ASCII" \
+  "! grep -qE '\\\$[A-Za-z_]+[^ -~]' .agent/bin/*.sh"
+# An array expansion inside a quoted element ("${arr[@]}" cmd) injects an empty
+# string when the array is empty, which makes the shell execute ''.
+check "proxy array not embedded as a quoted element" \
+  "! grep -q '\"\\\${proxy_env\\[@\\]}\" opencode' .agent/bin/run-agent.sh"
+
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
