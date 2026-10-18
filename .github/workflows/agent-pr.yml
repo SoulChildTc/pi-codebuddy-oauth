@@ -1,0 +1,100 @@
+name: agent-pr
+
+# Decision layer. Runs on trusted `main` code with write access; it never executes
+# the PR's code (agent-test.yml does that in an isolated read-only job).
+on:
+  workflow_run:
+    # Fires after agent-test finishes, so the merge gate can consume its evidence.
+    workflows: [agent-test]
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+  issues: write
+
+concurrency:
+  group: agent-pr-${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Skip PRs the agent already merged/closed and runs triggered by the bot itself.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request')
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          WR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          MANUAL: ${{ github.event.inputs.pr_number }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          n="${WR_NUMBER:-$MANUAL}"
+          # Fork PRs often omit pull_requests[] on workflow_run; resolve via the run API.
+          if [[ -z "$n" && -n "$WR_ID" ]]; then
+            n="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WR_ID" \
+                 --jq '.pull_requests[0].number // empty' 2>/dev/null || true)"
+          fi
+          if [[ -z "$n" && -n "$WR_ID" ]]; then
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WR_ID" --jq '.head_sha // empty' 2>/dev/null || true)"
+            [[ -n "$sha" ]] && n="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls" \
+                 --jq '.[0].number // empty' 2>/dev/null || true)"
+          fi
+          if [[ -z "$n" ]]; then
+            echo "no pull request associated with this event"; echo "number=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.number != ''
+        with:
+          ref: main        # trusted code only
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        if: steps.pr.outputs.number != ''
+        with:
+          node-version: 22
+
+      - name: Install opencode
+        if: steps.pr.outputs.number != ''
+        run: npm install --global @opencode/cli
+
+      - name: Review and merge if all gates pass
+        if: steps.pr.outputs.number != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          DEFAULT_MODEL: ${{ vars.AGENT_MODEL }}
+          FALLBACK_MODEL: ${{ vars.AGENT_FALLBACK_MODEL }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          ./.agent/bin/agent-pr.sh "$PR_NUMBER"
+
+      - name: Upload agent log
+        if: always() && steps.pr.outputs.number != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-${{ steps.pr.outputs.number }}-agent-log
+          path: .agent/out/run.log
+          retention-days: 14
+          if-no-files-found: ignore
