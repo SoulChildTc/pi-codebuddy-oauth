@@ -11,7 +11,7 @@
 //   opencode chat.headers       → wrapper 内 options.headers（provider 边界清晰，事件无 provider 信息）
 //   opencode config（模型发现） → registerProvider.models + 登录/启动后主动发现重注册
 //   opencode auth.methods       → registerProvider.oauth.login / refreshToken（Pi 原生 /login）
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks, RefreshModelsContext } from "@earendil-works/pi-ai";
 import { getConfig, resolveServerUrl, PROVIDER_ID, CHAT_COMPLETIONS_PATH, POLL_TOTAL_TIMEOUT_MS, DEFAULT_EXPIRES_MS } from "./config.js";
 import { createLogger } from "./log.js";
@@ -23,8 +23,9 @@ import { createAuthFetch } from "./auth-fetch.js";
 import { createCodebuddyStreamSimple } from "./stream.js";
 import { buildRequestHeaders, buildAuthHeaders } from "./headers.js";
 import { resolveIdentity, decodeJwtPayload } from "./jwt.js";
-import { fetchRemoteModels, remoteModelToPi, DEFAULT_MODEL, DiscoveryCache, type RemoteModel } from "./models.js";
-import { readCachedModels, writeCachedModels } from "./model-cache.js";
+import { fetchRemoteConfig, remoteModelToPi, DEFAULT_MODEL, DiscoveryCache, type RemoteConfig } from "./models.js";
+import { priceStatusForModel, type RemotePromotion } from "./pricing.js";
+import { readCachedConfig, writeCachedConfig } from "./model-cache.js";
 import * as fs from "fs/promises";
 import { homedir } from "os";
 import { join, dirname } from "path";
@@ -37,7 +38,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   const conversationIds = new LRUMap<string, string>(cfg.conversationMapMax);
   const discoveryCache = new DiscoveryCache({
     ttlMs: 5 * 60 * 1000,
-    fetchFn: (token, signal) => fetchRemoteModels(token, server, signal),
+    fetchFn: (token, signal) => fetchRemoteConfig(token, server, signal),
   });
 
   // --- token 快照（~/.pi/agent/codebuddy-auth.json）---
@@ -119,16 +120,32 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   });
 
   // --- 模型列表 ---
-  function modelsFromRemote(remote: RemoteModel[]) {
-    return remote.map(remoteModelToPi);
+  // 最近一次发现的促销与单价（供 footer 状态行按当前时段动态显示价格/折扣）
+  let latestPromotions: RemotePromotion[] = [];
+  // footer 定价状态的最后一个事件上下文（refreshPricingStatus 默认参数用；
+  // 声明必须在 discoverAndReregister 首次调用前完成——工厂阶段会 await 发现）
+  let lastCtx: ExtensionContext | undefined;
+  const creditsById = new Map<string, string | undefined>();
+
+  function modelsFromRemote(remote: RemoteConfig) {
+    // 空模型列表 = 发现失败/空响应（fetchRemoteConfig 对非 ok、code≠0 返回 []）。
+    // 调用方随后会放弃注册，这里也必须先返回，绝不能清空调价状态——
+    // 否则一次失败的刷新会把 footer/选择器已显示的价格抹掉（review 反馈）。
+    if (!remote.models.length) return [];
+    latestPromotions = remote.promotions;
+    creditsById.clear();
+    for (const m of remote.models) creditsById.set(m.id, m.credits);
+    return remote.models.map((m) => remoteModelToPi(m, remote.promotions));
   }
   function fallbackModels() {
-    return modelsFromRemote([DEFAULT_MODEL]);
+    return modelsFromRemote({ models: [DEFAULT_MODEL], promotions: [] });
   }
   // 启动种子：优先用上次落盘的模型列表，避免会话恢复时模型还没发现完（见 model-cache.ts）
   // 刻意不打日志：命中缓存是常规路径，每次启动都打印会污染 TUI/print 输出
-  const cachedModels = await readCachedModels();
-  let registeredModels = cachedModels.length ? cachedModels : fallbackModels();
+  // v2 缓存存原始 RemoteModel，经 modelsFromRemote 重新映射——映射逻辑升级
+  // （多模态/价格）自动作用于种子，不会无限期滞留旧生成的 PiModelConfig
+  const cachedConfig = await readCachedConfig();
+  let registeredModels = cachedConfig ? modelsFromRemote(cachedConfig) : fallbackModels();
 
   // 主动发现 + 重注册（registerProvider 可随时调用并立即生效）
   async function discoverAndReregister(token: string): Promise<void> {
@@ -138,7 +155,8 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
       if (!models.length) return;
       registeredModels = models;
       register(models);
-      await writeCachedModels(models);
+      await writeCachedConfig(remote);
+      refreshPricingStatus();
     } catch (e) {
       const status = (e as any)?.status;
       if (status === 401 || status === 403) {
@@ -202,7 +220,9 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
             const models = modelsFromRemote(remote);
             if (models.length) {
               registeredModels = models;
-              await writeCachedModels(models);
+              await writeCachedConfig(remote);
+              // 注册名已带新价格标签，footer 状态行同步刷新（否则停留旧价到下个 turn_end）
+              refreshPricingStatus();
               return models as any;
             }
           } catch (e) {
@@ -231,5 +251,33 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   pi.on("session_before_compact", (_event, ctx) => {
     const sid = ctx.sessionManager.getSessionId();
     if (sid) conversationIds.delete(sid);
+  });
+
+  // --- footer 状态行：当前模型的积分价格/生效折扣 ---
+  // 模型选择器只能展示注册时算好的 name（价格按注册时的时段固定）；
+  // 折扣按时段动态生效（如 glm-5.2 夜间 5 折），footer 这里在每次
+  // model_select / turn_end 后按当前时间重算，保证时段切换后价格新鲜。
+  function refreshPricingStatus(ctx: ExtensionContext | undefined = lastCtx): void {
+    if (!ctx || ctx.mode !== "tui" || !ctx.ui) return;
+    const model = ctx.model;
+    if (!model || model.provider !== PROVIDER_ID) {
+      ctx.ui.setStatus("codebuddy", undefined);
+      return;
+    }
+    ctx.ui.setStatus("codebuddy", priceStatusForModel(model.id, creditsById.get(model.id), latestPromotions));
+  }
+  pi.on("session_start", (_event, ctx) => {
+    lastCtx = ctx;
+    refreshPricingStatus(ctx);
+  });
+  pi.on("model_select", (_event, ctx) => {
+    lastCtx = ctx;
+    refreshPricingStatus(ctx);
+  });
+  // turn_end 用事件自身的 ctx：若依赖 session_start/model_select 捕获的 lastCtx，
+  // 外部 reload 后可能从未捕获过 ctx → footer 静默不再刷新；事件 ctx 也不会是陈旧引用
+  pi.on("turn_end", (_event, ctx) => {
+    lastCtx = ctx;
+    refreshPricingStatus(ctx);
   });
 }
