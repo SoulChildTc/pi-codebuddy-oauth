@@ -16,7 +16,7 @@ export interface PiModelConfig {
   contextWindow: number;
   maxTokens: number;
   thinkingLevelMap?: Record<string, string>;
-  compat?: { supportsDeveloperRole?: boolean };
+  compat?: { supportsDeveloperRole?: boolean; supportsReasoningEffort?: boolean };
 }
 
 export interface RemoteConfigResponse { code:number; data?:{ agents?:Array<{name:string; models?:string[]}>; models?:RemoteModel[] } }
@@ -63,7 +63,9 @@ const DEFAULT_CONTEXT = 131_072;
 const DEFAULT_MAX_TOKENS = 8192;
 
 function detectThinking(id: string): boolean {
-  return /claude|gemini|gpt-5|hy3|deepseek|glm/i.test(id);
+  // hy\d：混元 3/4/… 都带思考通道。写死 hy3 会让 hy4-preview 被误判为非推理模型，
+  // 于是 pi 侧既不给它 thinking 档位、也无从归一化上游泄漏到 content 里的思考草稿（见 reasoning-leak.ts）。
+  return /claude|gemini|gpt-5|hy\d|deepseek|glm/i.test(id);
 }
 
 function detectImages(id: string): boolean {
@@ -77,7 +79,8 @@ export function remoteModelToPi(m: RemoteModel): PiModelConfig {
   const cfg: PiModelConfig = {
     id: m.id,
     name: m.name,
-    reasoning: m.supportsReasoning !== false && detectThinking(m.id),
+    // 上游明确 false 时以 false 为准；true 或字段缺失时回退到 ID 猜测（此前 true 也会被 ID 猜测覆盖掉）。
+    reasoning: m.supportsReasoning === false ? false : m.supportsReasoning === true || detectThinking(m.id),
     input: (detectImages(m.id) && !m.disabledMultimodal) ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
@@ -92,6 +95,11 @@ export function remoteModelToPi(m: RemoteModel): PiModelConfig {
   if (cfg.reasoning && efforts?.length) {
     cfg.thinkingLevelMap = Object.fromEntries(efforts.map((e) => [e, e]));
     if (effort) cfg.thinkingLevelMap.default = effort;
+  }
+  // 只有上游公布 effort 词表时才下发 reasoning_effort：网关对未收录参数返回 400（同
+  // supportsDeveloperRole 那段注释），词表未知时保持与今天完全一致的请求形状。
+  if (cfg.reasoning && !efforts?.length) {
+    cfg.compat = { ...cfg.compat, supportsReasoningEffort: false };
   }
   return cfg;
 }
