@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/compat";
-import { remoteModelToPi, DEFAULT_MODEL } from "../src/models.js";
+import { remoteModelToPi, DEFAULT_MODEL, DiscoveryCache } from "../src/models.js";
 import type { RemoteModel } from "../src/models.js";
 
 describe("models (pi)", () => {
@@ -61,5 +61,35 @@ describe("models (pi)", () => {
     expect(p.id).toBe("auto");
     expect(p.contextWindow).toBe(168000);
     expect(p.maxTokens).toBe(32000);
+  });
+});
+
+describe("DiscoveryCache 瞬时失败降级保护", () => {
+  it("失败且无旧数据 → 返回 null，不缓存 [auto] 兜底", async () => {
+    const fetchFn = vi.fn().mockRejectedValue(new Error("network down"));
+    const c = new DiscoveryCache({ ttlMs: 60_000, fetchFn });
+    await expect(c.get("t", {})).resolves.toBeNull();
+    // 原实现会把 [DEFAULT_MODEL] 当成功结果缓存 5min TTL；修复后失败不缓存，下次仍会重试
+    await expect(c.get("t", {})).resolves.toBeNull();
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("有旧数据时瞬时失败 → 返回旧数据（不降级）", async () => {
+    let fail = false;
+    const good = [{ id: "m1", name: "M1" }];
+    const fetchFn = vi.fn().mockImplementation(() => fail ? Promise.reject(new Error("boom")) : Promise.resolve(good));
+    const c = new DiscoveryCache({ ttlMs: 20, fetchFn });
+    const first = await c.get("t", {});
+    expect(first).toEqual(good);
+    await new Promise((r) => setTimeout(r, 30)); // TTL 过期
+    fail = true;
+    const second = await c.get("t", {}); // stale-while-revalidate：旧数据兜住
+    expect(second).toEqual(good);
+  });
+
+  it("401/403 上抛（不吞）", async () => {
+    const e = Object.assign(new Error("discovery 401"), { status: 401 });
+    const c = new DiscoveryCache({ ttlMs: 1000, fetchFn: vi.fn().mockRejectedValue(e) });
+    await expect(c.get("t", {})).rejects.toMatchObject({ status: 401 });
   });
 });

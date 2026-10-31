@@ -13,12 +13,12 @@
 //   opencode auth.methods       → registerProvider.oauth.login / refreshToken（Pi 原生 /login）
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks, RefreshModelsContext } from "@earendil-works/pi-ai";
-import { getConfig, resolveServerUrl, PROVIDER_ID, CHAT_COMPLETIONS_PATH, POLL_TOTAL_TIMEOUT_MS, DEFAULT_EXPIRES_MS } from "./config.js";
+import { getConfig, resolveServerUrl, PROVIDER_ID, CHAT_COMPLETIONS_PATH, POLL_TOTAL_TIMEOUT_MS, DEFAULT_EXPIRES_MS, DISCOVERY_CACHE_TTL_MS } from "./config.js";
 import { createLogger } from "./log.js";
 import { LRUMap } from "./lru.js";
 import { effectiveAuth, pickAuthMode } from "./auth-state.js";
 import type { AuthState } from "./auth-state.js";
-import { requestAuthState, pollForToken, refreshAccessToken } from "./auth-flow.js";
+import { requestAuthState, pollForToken, refreshAccessToken, type TokenPair } from "./auth-flow.js";
 import { createAuthFetch } from "./auth-fetch.js";
 import { createCodebuddyStreamSimple } from "./stream.js";
 import { buildRequestHeaders, buildAuthHeaders } from "./headers.js";
@@ -36,7 +36,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   const logger = createLogger();
   const conversationIds = new LRUMap<string, string>(cfg.conversationMapMax);
   const discoveryCache = new DiscoveryCache({
-    ttlMs: 5 * 60 * 1000,
+    ttlMs: DISCOVERY_CACHE_TTL_MS,
     fetchFn: (token, signal) => fetchRemoteModels(token, server, signal),
   });
 
@@ -61,7 +61,11 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     syncSnapshot.value = cred;
     try {
       await fs.mkdir(dirname(snapshotPath), { recursive: true });
-      await fs.writeFile(snapshotPath, JSON.stringify(cred, null, 2), "utf8");
+      // 原子写（tmp + rename）：与 model-cache 一致，避免崩溃/并发读到半截 JSON；
+      // mode 0600：文件含 access + refresh token，不允许其他用户读取
+      const tmp = `${snapshotPath}.tmp`;
+      await fs.writeFile(tmp, JSON.stringify(cred, null, 2), { encoding: "utf8", mode: 0o600 });
+      await fs.rename(tmp, snapshotPath);
     } catch (e) {
       logger.error(`snapshot write failed: ${(e as Error).message}`);
     }
@@ -70,6 +74,15 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   function credToAuthState(cred: OAuthCredentials | undefined): AuthState | undefined {
     if (!cred) return undefined;
     return { type: "oauth", access: cred.access, refresh: cred.refresh ?? "", expires: cred.expires ?? 0 };
+  }
+
+  // TokenPair → OAuthCredentials 统一转换（登录/刷新/兜底刷新三处共用）
+  function tokenPairToCred(pair: TokenPair, fallbackRefresh: string): OAuthCredentials {
+    return {
+      access: pair.accessToken,
+      refresh: pair.refreshToken || fallbackRefresh,
+      expires: pair.expiresIn ? Date.now() + pair.expiresIn * 1000 : Date.now() + DEFAULT_EXPIRES_MS,
+    };
   }
 
   // --- 刷新（auth-fetch 401 兜底用）：单飞 + 写快照 ---
@@ -88,11 +101,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     return refreshLock.run(async () => {
       const r = await refreshAccessToken(oauthAuth.refresh, server.url);
       if (r?.accessToken) {
-        const cred: OAuthCredentials = {
-          access: r.accessToken,
-          refresh: r.refreshToken || oauthAuth.refresh,
-          expires: r.expiresIn ? Date.now() + r.expiresIn * 1000 : Date.now() + DEFAULT_EXPIRES_MS,
-        };
+        const cred = tokenPairToCred(r, oauthAuth.refresh);
         await persistSnapshot(cred);
         return credToAuthState(cred)!;
       }
@@ -131,14 +140,17 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   let registeredModels = cachedModels.length ? cachedModels : fallbackModels();
 
   // 主动发现 + 重注册（registerProvider 可随时调用并立即生效）
-  async function discoverAndReregister(token: string): Promise<void> {
+  // 返回 false 表示发现降级（网络瞬断，DiscoveryCache 返回 null）：保留现有 registeredModels 与磁盘缓存
+  async function discoverAndReregister(token: string): Promise<boolean> {
     try {
       const remote = await discoveryCache.get(token, { signal: undefined });
+      if (!remote) return false; // 瞬时失败降级：不用 [auto] 兜底覆盖真实模型列表
       const models = modelsFromRemote(remote);
-      if (!models.length) return;
+      if (!models.length) return false;
       registeredModels = models;
       register(models);
       await writeCachedModels(models);
+      return true;
     } catch (e) {
       const status = (e as any)?.status;
       if (status === 401 || status === 403) {
@@ -146,6 +158,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
       } else {
         logger.warn(`model discovery failed: ${(e as Error).message}`);
       }
+      return false;
     }
   }
 
@@ -167,11 +180,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
           const expiresAt = Date.now() + POLL_TOTAL_TIMEOUT_MS;
           const tok = await pollForToken(server.url, state.state, expiresAt, callbacks.signal);
           if (!tok?.accessToken) throw new Error("CodeBuddy IOA login failed or timed out");
-          const cred: OAuthCredentials = {
-            access: tok.accessToken,
-            refresh: tok.refreshToken || "",
-            expires: tok.expiresIn ? Date.now() + tok.expiresIn * 1000 : Date.now() + DEFAULT_EXPIRES_MS,
-          };
+          const cred = tokenPairToCred(tok, "");
           await persistSnapshot(cred);
           // 登录后立即发现模型并重注册（Pi 的 credential-change refresh 走 allowNetwork:false，不触发网络发现）
           void discoverAndReregister(cred.access);
@@ -181,11 +190,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
           if (!credentials.refresh) throw new Error("codebuddy: no refresh token stored");
           const r = await refreshAccessToken(credentials.refresh, server.url);
           if (!r?.accessToken) throw new Error("codebuddy: token refresh failed — re-run /login codebuddy");
-          const cred: OAuthCredentials = {
-            access: r.accessToken,
-            refresh: r.refreshToken || credentials.refresh,
-            expires: r.expiresIn ? Date.now() + r.expiresIn * 1000 : Date.now() + DEFAULT_EXPIRES_MS,
-          };
+          const cred = tokenPairToCred(r, credentials.refresh);
           await persistSnapshot(cred);
           return cred;
         },
@@ -199,11 +204,13 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
         if (cred?.access && context.allowNetwork) {
           try {
             const remote = await discoveryCache.get(cred.access, { signal: context.signal });
-            const models = modelsFromRemote(remote);
-            if (models.length) {
-              registeredModels = models;
-              await writeCachedModels(models);
-              return models as any;
+            if (remote) {
+              const models = modelsFromRemote(remote);
+              if (models.length) {
+                registeredModels = models;
+                await writeCachedModels(models);
+                return models as any;
+              }
             }
           } catch (e) {
             logger.warn(`model discovery failed: ${(e as Error).message}`);

@@ -49,7 +49,9 @@ export async function readCachedModels(): Promise<PiModelConfig[]> {
     const models = parsed.models.filter(isValidModel);
     if (models.length === 0) return [];
     if (typeof parsed.updatedAt === "number" && Date.now() - parsed.updatedAt > STALE_AFTER_MS) {
-      // 过期但仍返回：种子再旧也比只有 auto 强，发现成功后会被覆盖
+      // 过期但仍返回：种子再旧也比只有 auto 强，发现成功后会被覆盖。
+      // 打一条 debug 日志供诊断（不打 warn，避免常规路径噪声）。
+      console.error("[codebuddy] model cache is stale (>7d), will refresh after discovery");
     }
     return models;
   } catch {

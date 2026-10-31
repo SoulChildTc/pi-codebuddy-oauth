@@ -21,7 +21,8 @@ export interface CodebuddyStreamOptions {
 
 /**
  * 包装 pi-ai 内置 openai-completions.streamSimple：
- * - headers 合并动态头（调用方 headers 优先级更高，见 prepareRequest 合并顺序）
+ * - headers 合并动态头（实际以动态 CodeBuddy 头为准：auth-fetch 拦截器随后会
+ *   set() 覆写 Authorization/身份头，无冲突字段，见 auth-fetch.ts doRequest）
  * - fetch 换成拦截器
  */
 export function createCodebuddyStreamSimple(fetchFn: FetchFn, extra?: CodebuddyStreamOptions) {

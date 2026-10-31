@@ -172,3 +172,74 @@ describe("auth-fetch (pi)", () => {
     expect(headers.get("X-User-Id")).toBe("u1");
   });
 });
+
+describe("auth-fetch 修复回归", () => {
+  it("401 刷新失败 → 15s 冷却期内不再重复刷新", async () => {
+    const spy = vi.fn().mockResolvedValue(new Response("unauth", { status: 401 }));
+    const refreshAndPersist = vi.fn().mockResolvedValue(null);
+    const af = createAuthFetch(makeDeps({
+      getAuth: async () => ({ type: "oauth", access: "a", refresh: "r", expires: 0 }),
+      refreshAndPersist, fetchImpl: spy as any,
+    }));
+    const res1 = await af("https://x/v2/chat/completions", { method: "POST", body: "{}" });
+    expect(res1.status).toBe(401);
+    expect(refreshAndPersist).toHaveBeenCalledTimes(1);
+    // 冷却期内第二个 401 不应再触发刷新（原先每次请求都刷一遍）
+    const res2 = await af("https://x/v2/chat/completions", { method: "POST", body: "{}" });
+    expect(res2.status).toBe(401);
+    expect(refreshAndPersist).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("401 刷新失败后冷却期内 403 也不刷新；刷新成功则清除冷却", async () => {
+    let ok = false;
+    const spy = vi.fn().mockImplementation(async () => ok
+      ? new Response("ok", { status: 200 })
+      : new Response("forbidden", { status: 403 }));
+    let calls = 0;
+    const refreshAndPersist = vi.fn().mockImplementation(async () => {
+      calls += 1;
+      if (calls >= 2) { ok = true; return { type: "oauth", access: "n", refresh: "r", expires: 0 }; }
+      return null;
+    });
+    const af = createAuthFetch(makeDeps({
+      getAuth: async () => ({ type: "oauth", access: "a", refresh: "r", expires: 0 }),
+      refreshAndPersist, fetchImpl: spy as any,
+    }));
+    vi.useFakeTimers();
+    await af("https://x/v2/chat/completions", { method: "POST", body: "{}" }); // 刷新失败 → 进冷却
+    await af("https://x/v2/chat/completions", { method: "POST", body: "{}" }); // 冷却中：不刷新
+    expect(refreshAndPersist).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 16_000); // 冷却过期
+    const res = await af("https://x/v2/chat/completions", { method: "POST", body: "{}" });
+    vi.useRealTimers();
+    expect(refreshAndPersist).toHaveBeenCalledTimes(2);
+    expect(res.status).toBe(200); // 刷新成功 + 重试成功
+  });
+
+  it("11133 退避期间用户 abort → 不抛异常，返回携带原 body 的 400 Response", async () => {
+    const spy = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ code: 11133, msg: "transient" }), { status: 400 })));
+    const af = createAuthFetch(makeDeps({ fetchImpl: spy as any }));
+    const ctrl = new AbortController();
+    const p = af("https://x/v2/chat/completions", { method: "POST", body: "{}", signal: ctrl.signal });
+    setTimeout(() => ctrl.abort(), 30); // 在退避 sleep（1s）中触发 abort
+    const res = await p; // 原实现此处会 reject（TypeError: Body is unusable）
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 11133 });
+    expect(spy).toHaveBeenCalledTimes(1); // abort 后不再重发
+  });
+
+  it("重试次数可用 cfg.transient400Retries 配置", async () => {
+    const spy = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ code: 11133 }), { status: 400 })));
+    const af = createAuthFetch(makeDeps({ fetchImpl: spy as any, cfg: { transient400Retries: 0 } as any }));
+    vi.useFakeTimers();
+    const p = af("https://x/v2/chat/completions", { method: "POST", body: "{}" });
+    await vi.runAllTimersAsync();
+    const res = await p;
+    vi.useRealTimers();
+    expect(res.status).toBe(400);
+    expect(spy).toHaveBeenCalledTimes(1); // 0 次 = 不重试
+  });
+});

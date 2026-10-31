@@ -99,17 +99,19 @@ export function remoteModelToPi(m: RemoteModel): PiModelConfig {
 export class DiscoveryCache {
   private data: RemoteModel[] | null = null;
   private fetchedAt = 0;
-  private inflight: Promise<RemoteModel[]> | null = null;
+  private inflight: Promise<RemoteModel[] | null> | null = null;
   private readonly fetchFn: (token: string, signal?: AbortSignal) => Promise<RemoteModel[]>;
   constructor(private opts: { ttlMs:number; fetchFn: (token: string, signal?: AbortSignal)=>Promise<RemoteModel[]> }) { this.fetchFn = opts.fetchFn; }
-  async get(token:string, { signal }: { signal?:AbortSignal }): Promise<RemoteModel[]> {
+  /** 返回 null 表示本次为瞬时失败降级：调用方应保留现有模型列表/缓存，不要用 [auto] 兑底覆盖 */
+  async get(token:string, { signal }: { signal?:AbortSignal }): Promise<RemoteModel[] | null> {
     const now = Date.now();
     if (this.data && (now - this.fetchedAt) < this.opts.ttlMs) return this.data;
     if (this.inflight) return this.inflight;
     this.inflight = this.fetchFn(token, signal).then(d => { this.data = d; this.fetchedAt = Date.now(); return d; }).catch(e => {
       if ((e as any)?.status === 401 || (e as any)?.status === 403) throw e;
-      if (!this.data) { this.data = [DEFAULT_MODEL]; this.fetchedAt = now; return this.data; }
-      return this.data;
+      // 瞬时失败（网络/超时/5xx）：返回 null 信号降级，不把 [DEFAULT_MODEL] 当成功结果缓存
+      // —— 否则一次网络抖动会把磁盘上 15 个真实模型的缓存覆盖成只有 auto，且 5min TTL 内不再重试
+      return null;
     }).finally(() => { this.inflight = null; });
     if (this.data) { this.inflight.catch(() => {}); return this.data; }
     return this.inflight;
