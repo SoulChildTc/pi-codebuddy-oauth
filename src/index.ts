@@ -24,7 +24,7 @@ import { createCodebuddyStreamSimple } from "./stream.js";
 import { buildRequestHeaders, buildAuthHeaders } from "./headers.js";
 import { resolveIdentity, decodeJwtPayload } from "./jwt.js";
 import { fetchRemoteModels, remoteModelToPi, DEFAULT_MODEL, DiscoveryCache, type RemoteModel } from "./models.js";
-import { readCachedModels, writeCachedModels } from "./model-cache.js";
+import { readCachedConfig, writeCachedConfig } from "./model-cache.js";
 import * as fs from "fs/promises";
 import { homedir } from "os";
 import { join, dirname } from "path";
@@ -127,8 +127,10 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   }
   // 启动种子：优先用上次落盘的模型列表，避免会话恢复时模型还没发现完（见 model-cache.ts）
   // 刻意不打日志：命中缓存是常规路径，每次启动都打印会污染 TUI/print 输出
-  const cachedModels = await readCachedModels();
-  let registeredModels = cachedModels.length ? cachedModels : fallbackModels();
+  // v2 缓存存原始 RemoteModel，经 modelsFromRemote 重新映射——映射逻辑升级
+  // （多模态等）自动作用于种子，不会无限期滞留旧生成的 PiModelConfig
+  const cachedModels = await readCachedConfig();
+  let registeredModels = cachedModels?.length ? modelsFromRemote(cachedModels) : fallbackModels();
 
   // 主动发现 + 重注册（registerProvider 可随时调用并立即生效）
   async function discoverAndReregister(token: string): Promise<void> {
@@ -138,7 +140,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
       if (!models.length) return;
       registeredModels = models;
       register(models);
-      await writeCachedModels(models);
+      await writeCachedConfig(remote);
     } catch (e) {
       const status = (e as any)?.status;
       if (status === 401 || status === 403) {
@@ -202,7 +204,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
             const models = modelsFromRemote(remote);
             if (models.length) {
               registeredModels = models;
-              await writeCachedModels(models);
+              await writeCachedConfig(remote);
               return models as any;
             }
           } catch (e) {
