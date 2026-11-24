@@ -23,12 +23,20 @@ function model(id: string, extra: Partial<PiModelConfig> = {}): PiModelConfig {
 
 describe("model-cache", () => {
   const cachePath = getModelCachePath();
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
   beforeEach(async () => {
     await fs.rm(cachePath, { force: true });
   });
   afterEach(async () => {
     await fs.rm(cachePath, { force: true });
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  });
+
+  it("使用 PI_CODING_AGENT_DIR 指定缓存目录", () => {
+    process.env.PI_CODING_AGENT_DIR = join(tmpHome, "custom-agent");
+    expect(getModelCachePath()).toBe(join(tmpHome, "custom-agent", "codebuddy-models-cache.json"));
   });
 
   it("缓存路径落在 pi agent 目录下", () => {
