@@ -26,9 +26,8 @@ import { resolveIdentity, decodeJwtPayload } from "./jwt.js";
 import { fetchRemoteModels, remoteModelToPi, DEFAULT_MODEL, DiscoveryCache, type RemoteModel } from "./models.js";
 import { readCachedModels, writeCachedModels } from "./model-cache.js";
 import * as fs from "fs/promises";
-import { homedir } from "os";
 import { join, dirname } from "path";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "./agent-dir.js";
 
 export default async function codebuddyExtension(pi: ExtensionAPI) {
   const cfg = getConfig();
@@ -40,10 +39,9 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     fetchFn: (token, signal) => fetchRemoteModels(token, server, signal),
   });
 
-  // --- token 快照（~/.pi/agent/codebuddy-auth.json）---
   // Pi CredentialStore 不对扩展暴露读取接口；login/refresh 全部经过本扩展，
   // 顺手落一份独立快照供请求时读取。真实凭据源仍是 Pi auth.json（由 Pi 自动持久化）。
-  const snapshotPath = join(homedir(), CONFIG_DIR_NAME || ".pi", "agent", "codebuddy-auth.json");
+  const snapshotPath = join(getAgentDir(), "codebuddy-auth.json");
   const syncSnapshot: { value: OAuthCredentials | undefined } = { value: undefined };
 
   async function loadSnapshot(): Promise<void> {

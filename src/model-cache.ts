@@ -14,9 +14,8 @@
 // 拦截器注入（自定义 streamSimple）。在 models.json 里声明同 id 的原生 provider
 // 会引入 baseUrl/api 的重复定义，并可能与 pi-model-manager 的跨进程锁相互干扰。
 import * as fs from "fs/promises";
-import { homedir } from "os";
 import { dirname, join } from "path";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "./agent-dir.js";
 import type { PiModelConfig } from "./models.js";
 
 const CACHE_VERSION = 1;
@@ -30,7 +29,7 @@ interface CacheDocument {
 }
 
 export function getModelCachePath(): string {
-  return join(homedir(), CONFIG_DIR_NAME || ".pi", "agent", "codebuddy-models-cache.json");
+  return join(getAgentDir(), "codebuddy-models-cache.json");
 }
 
 function isValidModel(value: unknown): value is PiModelConfig {
